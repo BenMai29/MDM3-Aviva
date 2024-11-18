@@ -2,7 +2,7 @@ import folium
 import json
 
 # Read the JSON file
-with open('garages.json') as f:
+with open('data/garages.json') as f:
     data = json.load(f)
 
 # Create a base map centered on UK
