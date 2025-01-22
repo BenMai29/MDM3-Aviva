@@ -4,11 +4,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 import shapely
 import geovoronoi as gv
-from shapely.geometry import Polygon, MultiPolygon
+from shapely.geometry import Polygon, MultiPolygon, Point, LineString, MultiPoint
 import osmnx as ox
 import networkx as nx
 from typing import Dict, Tuple, List
 import os
+from alphashape import alphashape
 
 # Constants
 ROAD_SPEEDS = {
@@ -145,7 +146,6 @@ def calculate_network_voronoi(G: nx.Graph, points: np.ndarray, boundary: Polygon
                     # Try creating alpha shape with increasing alpha until valid
                     while alpha <= 100:  # Limit the alpha value
                         try:
-                            from alphashape import alphashape
                             region = alphashape(points_array, alpha)
                             if region.is_valid and region.area > 0:
                                 final_poly = region.intersection(boundary)
@@ -178,6 +178,147 @@ def plot_region(region, ax, color, **kwargs):
     elif isinstance(region, shapely.Polygon):
         gpd.GeoDataFrame(geometry=[region]).plot(ax=ax, color=color, **kwargs)
 
+def create_alpha_shape(points: np.ndarray, boundary: Polygon, max_alpha: float = 100.0) -> Polygon:
+    """Create an alpha shape polygon from points and clip to boundary."""
+    if len(points) < 3:
+        return None
+
+    alpha = 0.0
+    while alpha <= max_alpha:
+        try:
+            alpha_poly = alphashape(points, alpha)
+            if not alpha_poly.is_valid:
+                alpha_poly = alpha_poly.buffer(0)
+            if alpha_poly.is_empty:
+                raise ValueError("Empty polygon")
+
+            # Clip to boundary and validate
+            final_poly = alpha_poly.intersection(boundary)
+            if final_poly.is_valid and not final_poly.is_empty:
+                return final_poly
+        except Exception as e:
+            print(f"Alpha {alpha} failed: {e}")
+        alpha += 10  # Increment alpha
+
+    # Fallback to convex hull
+    print("Using convex hull as fallback")
+    convex_hull = MultiPoint(points).convex_hull
+    final_poly = convex_hull.intersection(boundary)
+    return final_poly if final_poly.is_valid else None
+
+def calculate_extended_ego_graph(G: nx.MultiDiGraph, center_node: int, distance: float, weight: str = 'travel_time') -> Tuple[List[int], List[Tuple]]:
+    """
+    Calculate extended ego graph that includes partial edges.
+    Returns nodes and edges within the specified distance/time.
+    """
+    # Get initial ego graph
+    ego_nodes = set()
+    ego_edges = []
+
+    # Calculate shortest paths from center
+    distances = nx.single_source_dijkstra_path_length(G, center_node, weight=weight)
+
+    for node, dist in distances.items():
+        if dist <= distance:
+            ego_nodes.add(node)
+            # Check edges connected to this node
+            for _, v, edge_data in G.edges(node, data=True):
+                edge_weight = edge_data.get(weight, 0)
+                if dist + edge_weight > distance:
+                    # Calculate how much of the edge is within distance
+                    ratio = (distance - dist) / edge_weight
+                    if 0 < ratio < 1:
+                        if 'geometry' in edge_data:
+                            # Interpolate along the geometry
+                            partial_geom = shapely.ops.substring(
+                                edge_data['geometry'],
+                                0,
+                                edge_data['geometry'].length * ratio
+                            )
+                            ego_edges.append((node, v, partial_geom))
+                        else:
+                            # Linear interpolation for straight edges
+                            start = Point(G.nodes[node]['x'], G.nodes[node]['y'])
+                            end = Point(G.nodes[v]['x'], G.nodes[v]['y'])
+                            line = LineString([start, end])
+                            partial_geom = shapely.ops.substring(line, 0, line.length * ratio)
+                            ego_edges.append((node, v, partial_geom))
+                else:
+                    ego_edges.append((node, v, edge_data.get('geometry', None)))
+
+    return list(ego_nodes), ego_edges
+
+def generate_isochrones(G: nx.MultiDiGraph, origins: List, time_intervals: List[float], boundary: Polygon) -> Dict[float, Polygon]:
+    """
+    Generate isochrone polygons for given time intervals from origin nodes using extended ego graph.
+    """
+    isochrones = {}
+
+    for t in sorted(time_intervals):
+        print(f"\nCalculating {t/60:.0f} minute isochrone...")
+
+        # Collect all accessible nodes and edges for each origin
+        all_nodes = set()
+        all_edges = []
+
+        for origin in origins:
+            nodes, edges = calculate_extended_ego_graph(G, origin, t)
+            all_nodes.update(nodes)
+            all_edges.extend(edges)
+
+        if not all_nodes:
+            print(f"No nodes found within {t/60:.0f} minutes")
+            continue
+
+        # Collect coordinates for alpha shape
+        coords = []
+
+        # Add node coordinates
+        for node in all_nodes:
+            coords.append((G.nodes[node]['x'], G.nodes[node]['y']))
+
+        # Add edge coordinates with interpolated points
+        for _, _, geom in all_edges:
+            if geom is not None:
+                if isinstance(geom, LineString):
+                    # Sample points along the line
+                    distances = np.linspace(0, geom.length, max(3, int(geom.length/50)))
+                    points = [geom.interpolate(distance) for distance in distances]
+                    coords.extend([(p.x, p.y) for p in points])
+                else:
+                    coords.extend(list(geom.coords))
+
+        # Create alpha shape with adaptive alpha
+        points = np.array(coords)
+        if len(points) >= 3:
+            alpha = 0.0
+            max_alpha = 100.0
+            step = 5.0
+
+            while alpha <= max_alpha:
+                try:
+                    shape = alphashape(points, alpha)
+                    if shape.is_valid and not shape.is_empty:
+                        # Clip to boundary
+                        final_shape = shape.intersection(boundary)
+                        if final_shape.is_valid and not final_shape.is_empty:
+                            isochrones[t] = final_shape
+                            print(f"Created {t/60:.0f} minute isochrone with alpha {alpha}")
+                            break
+                except Exception:
+                    pass
+                alpha += step
+
+            if t not in isochrones:
+                # Fallback to convex hull
+                hull = MultiPoint(points).convex_hull
+                final_shape = hull.intersection(boundary)
+                if final_shape.is_valid and not final_shape.is_empty:
+                    isochrones[t] = final_shape
+                    print(f"Created {t/60:.0f} minute isochrone using convex hull")
+
+    return isochrones
+
 def main():
     print("Starting Bristol region Voronoi analysis...")
 
@@ -208,6 +349,7 @@ def main():
         'North Somerset',
         'Weston-Super-Mare',
         'North East Somerset',
+        'Bath',
         'Kingswood',
         'Thornbury and Yate',
         'Stroud',
@@ -395,7 +537,76 @@ def main():
         print("Saving Network and Traffic-Weighted Voronoi plots...")
         plt.savefig('plots/network_voronoi.png', dpi=300, bbox_inches='tight')
         plt.close()
-        print("\nAnalysis complete!")
+
+    # New section for Isochrone Map
+    if G is not None and len(points) > 0:
+        print("\nCreating Isochrone Map...")
+
+        # Select the first garage as the origin
+        origin_point = points[0]
+        origin_node = ox.nearest_nodes(G, origin_point[0], origin_point[1])
+        print(f"Origin node: {origin_node}")
+
+        # Define time intervals in seconds (5, 10, 15, 20 minutes)
+        time_intervals = [5*60, 10*60, 15*60, 20*60]
+
+        # Generate isochrones
+        isochrones = generate_isochrones(G, [origin_node], time_intervals, boundary_shape)
+
+        # Plotting
+        fig3, ax3 = plt.subplots(figsize=(15, 15))
+
+        # Plot road network
+        roads_gdf = gpd.GeoDataFrame(geometry=[
+            data['geometry'] for _, _, data in G.edges(data=True) if 'geometry' in data
+        ])
+        roads_gdf.plot(ax=ax3, color='gray', linewidth=0.5, alpha=0.5)
+
+        # Plot origin
+        gpd.GeoDataFrame(geometry=[Point(origin_point)]).plot(
+            ax=ax3, color='red', markersize=100, zorder=3
+        )
+
+        # Plot isochrones
+        colors = ['#2b83ba', '#abdda4', '#ffffbf', '#fdae61']
+        legend_patches = []  # Create list to store legend entries
+
+        # Sort time intervals in reverse order (largest first)
+        for i, (t, poly) in enumerate(sorted(isochrones.items(), reverse=True)):
+            if poly:
+                # Create the plot
+                plot = gpd.GeoDataFrame(geometry=[poly]).plot(
+                    ax=ax3,
+                    color=colors[i],
+                    alpha=0.5,
+                    edgecolor='k'
+                )
+                # Create a patch for the legend (keep original order for legend)
+                from matplotlib.patches import Patch
+                legend_patches.insert(0, Patch(  # Insert at beginning to maintain original order
+                    facecolor=colors[i],
+                    edgecolor='k',
+                    alpha=0.5,
+                    label=f'{t//60} minutes'
+                ))
+
+        # Add the legend with the custom patches
+        ax3.legend(handles=legend_patches, loc='upper right')
+
+        # Add boundary and formatting
+        gpd.GeoDataFrame(geometry=[boundary_shape.boundary]).plot(ax=ax3, color='black', linewidth=1)
+        # Try to get garage name if available, otherwise use generic title
+        try:
+            garage_name = bristol_garages.iloc[0]["GarageName"]
+            title = f'Isochrone Map from {garage_name}'
+        except (KeyError, IndexError):
+            title = 'Isochrone Map from Selected Garage'
+        ax3.set_title(title)
+        ax3.set_axis_off()
+        plt.tight_layout()
+        plt.savefig('plots/isochrone_map.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        print("Isochrone map saved to plots/isochrone_map.png")
 
 if __name__ == "__main__":
     main()
