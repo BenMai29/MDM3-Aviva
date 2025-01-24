@@ -9,6 +9,7 @@ import osmnx as ox
 import networkx as nx
 from typing import Dict, Tuple, List
 import os
+import json
 from alphashape import alphashape
 
 # Constants
@@ -416,14 +417,14 @@ def main():
     for idx, region in enumerate(poly_shapes.values()):
         gpd.GeoDataFrame(geometry=[region]).plot(
             ax=ax1,
-            color=plt.cm.Set3(idx / len(points)),
-            alpha=0.5,
+            color=plt.cm.tab20(idx / len(points)),
+            alpha=0.7,
             edgecolor='black'
         )
     gpd.GeoDataFrame(geometry=gpd.points_from_xy(points[:, 0], points[:, 1])).plot(
-        ax=ax1, color='red', markersize=20
+        ax=ax1, color='red', markersize=10
     )
-    ax1.set_title('Greater Bristol Region - Euclidean Voronoi')
+    # ax1.set_title('South West UK Region - Euclidean Voronoi', fontsize=26)
 
     # Add boundary and format
     gpd.GeoDataFrame(geometry=[boundary_shape.boundary]).plot(
@@ -438,28 +439,17 @@ def main():
     plt.savefig('plots/euclidean_voronoi.png', dpi=300, bbox_inches='tight')
     plt.close()
 
-    # Figure 2: Network and Traffic-Weighted Voronoi
-    print("\nCreating Network and Traffic-Weighted Voronoi plots...")
-    fig2, (ax2, ax3) = plt.subplots(1, 2, figsize=(30, 15))
+    # Figure 2: Network Voronoi (standalone)
+    print("\nCreating Network Voronoi plot...")
+    fig2, ax2 = plt.subplots(figsize=(15, 15))
 
-    # 2. Network Voronoi
-    print("\nProcessing Network Voronoi...")
     G = get_bristol_network(boundary_shape)
     if G is not None:
-        # Plot road network first (only once) - more efficiently
-        print("Plotting Bristol road network...")
-        # Collect all geometries into a list first
-        road_geometries = []
-        for _, _, data in G.edges(data=True):
-            if 'geometry' in data:
-                road_geometries.append(data['geometry'])
-
-        # Create single GeoDataFrame for all roads
-        roads_gdf = gpd.GeoDataFrame(geometry=road_geometries)
-
-        # Plot once for each axis
+        # Plot road network
+        roads_gdf = gpd.GeoDataFrame(geometry=[
+            data['geometry'] for _, _, data in G.edges(data=True) if 'geometry' in data
+        ])
         roads_gdf.plot(ax=ax2, color='black', linewidth=0.5, alpha=0.3)
-        roads_gdf.plot(ax=ax3, color='black', linewidth=0.5, alpha=0.3)
 
         # Calculate and plot Network Voronoi regions
         network_regions = calculate_network_voronoi(G, points, boundary_shape)
@@ -468,74 +458,98 @@ def main():
             plot_region(
                 region,
                 ax2,
-                color=plt.cm.Set3(idx / len(points)),
-                alpha=0.5,
+                color=plt.cm.tab20(idx / len(points)),
+                alpha=0.7,
                 edgecolor='black'
             )
 
-        # Plot points
-        gpd.GeoDataFrame(geometry=gpd.points_from_xy(points[:, 0], points[:, 1])).plot(
-            ax=ax2, color='red', markersize=20
+        # Plot points with region colors
+        for idx, (x, y) in enumerate(points):
+            ax2.plot(x, y, 'o', markersize=12,
+                    color=plt.cm.tab20(idx / len(points)),
+                    markeredgecolor='black', zorder=3,
+                    linewidth=0.5)
+
+        # Plot boundary
+        gpd.GeoDataFrame(geometry=[boundary_shape.boundary]).plot(
+            ax=ax2, color='black', linewidth=1
         )
-        ax2.set_title('Greater Bristol Region - Network Voronoi (Travel Time)')
+        ax2.set_title('Network Voronoi (Base Travel Times)', fontsize=18)
+        ax2.set_axis_off()
 
-        # 3. Traffic-Weighted Voronoi
-        print("\nProcessing Traffic-Weighted Voronoi...")
-        print("Applying traffic weights to road network...")
-        TRAFFIC_FACTORS = {
-            'motorway': 2.5,  # Higher congestion on major roads
-            'trunk': 2.0,
-            'primary': 1.8,
-            'secondary': 1.2,
-            'tertiary': 1.1,
-            'residential': 1.0,
-            'unclassified': 1.0,
-            'default': 1.0
-        }
-
-        edge_count = 0
-        for u, v, k, data in G.edges(data=True, keys=True):
-            highway = data.get('highway', 'default')
-            if isinstance(highway, list):
-                highway = highway[0]
-            traffic_factor = TRAFFIC_FACTORS.get(highway, TRAFFIC_FACTORS['default'])
-            data['traffic_time'] = data['travel_time'] * traffic_factor
-            edge_count += 1
-            if edge_count % 1000 == 0:
-                print(f"Applied traffic weights to {edge_count} edges...")
-
-        print("Calculating traffic-weighted regions...")
-        traffic_regions = calculate_network_voronoi(G, points, boundary_shape, weight='traffic_time')
-        print("Plotting Traffic-Weighted Voronoi regions...")
-        for idx, region in traffic_regions.items():
-            plot_region(
-                region,
-                ax3,
-                color=plt.cm.Set3(idx / len(points)),
-                alpha=0.5,
-                edgecolor='black'
-            )
-
-        # Plot points (already plotted road network earlier)
-        gpd.GeoDataFrame(geometry=gpd.points_from_xy(points[:, 0], points[:, 1])).plot(
-            ax=ax3, color='red', markersize=20
-        )
-        ax3.set_title('Greater Bristol Region - Traffic-Weighted Voronoi')
-
-        # Add Bristol boundary to network plots and fix aspect ratio
-        print("\nAdding Bristol boundary to network plots...")
-        for ax in [ax2, ax3]:
-            gpd.GeoDataFrame(geometry=[boundary_shape.boundary]).plot(
-                ax=ax, color='black', linewidth=1
-            )
-            ax.set_aspect('equal', adjustable='box')
-            ax.set_xticks([])
-            ax.set_yticks([])
-
-        print("\nFinalizing visualization...")
-        plt.tight_layout()
-        print("Saving Network and Traffic-Weighted Voronoi plots...")
+        print("Saving Network Voronoi plot...")
         plt.savefig('plots/network_voronoi.png', dpi=300, bbox_inches='tight')
+        plt.close()
+
+    # New Figure 3: Traffic-Weighted Voronoi Comparison
+    print("\nCreating Traffic-Weighted Voronoi comparison...")
+    fig3, (ax3, ax4) = plt.subplots(1, 2, figsize=(30, 15))
+
+    if G is not None:
+        # Process and plot for different times of day
+        traffic_times = ["10", "16"]  # Morning (10am) vs Afternoon (4pm)
+        axes = [ax3, ax4]
+
+        for time_idx, time_of_day in enumerate(traffic_times):
+            current_ax = axes[time_idx]
+
+            # Plot base road network
+            roads_gdf.plot(ax=current_ax, color='black', linewidth=0.5, alpha=0.3)
+
+            # Load and apply traffic factors for this time
+            print(f"\nProcessing {time_of_day}:00 traffic weights...")
+            with open('data/traffic_factors.json', 'r') as f:
+                loaded_traffic_factors = json.load(f)
+
+            TRAFFIC_FACTORS = {
+                'motorway': loaded_traffic_factors['motorway'][time_of_day],
+                'trunk': loaded_traffic_factors['trunk'][time_of_day],
+                'primary': loaded_traffic_factors['primary'][time_of_day],
+                'secondary': loaded_traffic_factors['secondary'][time_of_day],
+                'tertiary': loaded_traffic_factors['tertiary'][time_of_day],
+                'residential': loaded_traffic_factors['unclassified'][time_of_day],
+                'unclassified': loaded_traffic_factors['unclassified'][time_of_day],
+                'default': loaded_traffic_factors['default']
+            }
+
+            # Apply traffic factors to network
+            edge_count = 0
+            for u, v, k, data in G.edges(data=True, keys=True):
+                highway = data.get('highway', 'default')
+                if isinstance(highway, list):
+                    highway = highway[0]
+                traffic_factor = TRAFFIC_FACTORS.get(highway, TRAFFIC_FACTORS['default'])
+                data['traffic_time'] = data['travel_time'] * traffic_factor
+                edge_count += 1
+
+            # Calculate and plot traffic-weighted regions
+            traffic_regions = calculate_network_voronoi(G, points, boundary_shape, weight='traffic_time')
+            for idx, region in traffic_regions.items():
+                plot_region(
+                    region,
+                    current_ax,
+                    color=plt.cm.tab20(idx / len(points)),
+                    alpha=0.7,
+                    edgecolor='black'
+                )
+
+            # Plot points with region colors
+            for idx, (x, y) in enumerate(points):
+                current_ax.plot(x, y, 'o', markersize=12,
+                              color=plt.cm.tab20(idx / len(points)),
+                              markeredgecolor='black', zorder=3,
+                              linewidth=0.5)
+
+            # Plot boundary
+            gpd.GeoDataFrame(geometry=[boundary_shape.boundary]).plot(
+                ax=current_ax, color='black', linewidth=1
+            )
+            current_ax.set_title(f'Traffic-Weighted Voronoi ({time_of_day}:00)', fontsize=18)
+            current_ax.set_axis_off()
+
+        print("\nFinalizing traffic comparison visualization...")
+        plt.tight_layout()
+        plt.savefig('plots/traffic_voronoi_comparison.png', dpi=300, bbox_inches='tight')
         plt.close()
 
     # New section for Isochrone Map
@@ -554,17 +568,17 @@ def main():
         isochrones = generate_isochrones(G, [origin_node], time_intervals, boundary_shape)
 
         # Plotting
-        fig3, ax3 = plt.subplots(figsize=(15, 15))
+        fig4, ax4 = plt.subplots(figsize=(15, 15))
 
         # Plot road network
         roads_gdf = gpd.GeoDataFrame(geometry=[
             data['geometry'] for _, _, data in G.edges(data=True) if 'geometry' in data
         ])
-        roads_gdf.plot(ax=ax3, color='gray', linewidth=0.5, alpha=0.5)
+        roads_gdf.plot(ax=ax4, color='gray', linewidth=0.5, alpha=0.5)
 
         # Plot origin
         gpd.GeoDataFrame(geometry=[Point(origin_point)]).plot(
-            ax=ax3, color='red', markersize=100, zorder=3
+            ax=ax4, color='red', markersize=100, zorder=3
         )
 
         # Plot isochrones
@@ -576,7 +590,7 @@ def main():
             if poly:
                 # Create the plot
                 plot = gpd.GeoDataFrame(geometry=[poly]).plot(
-                    ax=ax3,
+                    ax=ax4,
                     color=colors[i],
                     alpha=0.5,
                     edgecolor='k'
@@ -591,18 +605,18 @@ def main():
                 ))
 
         # Add the legend with the custom patches
-        ax3.legend(handles=legend_patches, loc='upper right')
+        ax4.legend(handles=legend_patches, loc='upper right')
 
         # Add boundary and formatting
-        gpd.GeoDataFrame(geometry=[boundary_shape.boundary]).plot(ax=ax3, color='black', linewidth=1)
+        gpd.GeoDataFrame(geometry=[boundary_shape.boundary]).plot(ax=ax4, color='black', linewidth=1)
         # Try to get garage name if available, otherwise use generic title
         try:
             garage_name = bristol_garages.iloc[0]["GarageName"]
             title = f'Isochrone Map from {garage_name}'
         except (KeyError, IndexError):
             title = 'Isochrone Map from Selected Garage'
-        ax3.set_title(title)
-        ax3.set_axis_off()
+        ax4.set_title(title)
+        ax4.set_axis_off()
         plt.tight_layout()
         plt.savefig('plots/isochrone_map.png', dpi=300, bbox_inches='tight')
         plt.close()
