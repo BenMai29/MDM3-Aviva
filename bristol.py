@@ -11,6 +11,8 @@ from typing import Dict, Tuple, List
 import os
 import json
 from alphashape import alphashape
+import random
+from matplotlib.collections import LineCollection
 
 # Constants
 ROAD_SPEEDS = {
@@ -320,6 +322,86 @@ def generate_isochrones(G: nx.MultiDiGraph, origins: List, time_intervals: List[
 
     return isochrones
 
+def simulate_breakdown_scenario(G, network_regions, points, boundary_shape):
+    """Simulate a breakdown and plot response path using network Voronoi"""
+    print("\nSimulating breakdown scenario...")
+
+    # Generate random breakdown location within boundary
+    minx, miny, maxx, maxy = boundary_shape.bounds
+    while True:
+        breakdown_point = Point(random.uniform(minx, maxx), random.uniform(miny, maxy))
+        if breakdown_point.within(boundary_shape):
+            break
+
+    # Find which Voronoi region the breakdown is in
+    responsible_garage = None
+    for idx, region in network_regions.items():
+        if breakdown_point.within(region):
+            responsible_garage = idx
+            break
+
+    if responsible_garage is None:
+        print("Breakdown outside all service areas!")
+        return
+
+    # Get garage location and nearest node
+    garage_point = Point(points[responsible_garage])
+    garage_node = ox.nearest_nodes(G, garage_point.x, garage_point.y)
+    breakdown_node = ox.nearest_nodes(G, breakdown_point.x, breakdown_point.y)
+
+    # Calculate shortest path using network travel times
+    try:
+        path = nx.shortest_path(G, garage_node, breakdown_node, weight='travel_time')
+        path_edges = list(zip(path[:-1], path[1:]))
+        lines = []
+        for u, v in path_edges:
+            data = G.get_edge_data(u, v)[0]
+            if 'geometry' in data:
+                lines.append(data['geometry'])
+            else:
+                lines.append(LineString([Point(G.nodes[u]['x'], G.nodes[u]['y']),
+                                       Point(G.nodes[v]['x'], G.nodes[v]['y'])]))
+        path_line = LineString([point for line in lines for point in line.coords])
+    except nx.NetworkXNoPath:
+        print("No path found to breakdown location")
+        return
+
+    # Plotting
+    fig, ax = plt.subplots(figsize=(15, 15))
+
+    # Plot road network
+    roads_gdf = gpd.GeoDataFrame(geometry=[
+        data['geometry'] for _, _, data in G.edges(data=True) if 'geometry' in data
+    ])
+    roads_gdf.plot(ax=ax, color='black', linewidth=0.5, alpha=0.3)
+
+    # Plot Voronoi regions
+    for idx, region in network_regions.items():
+        plot_region(
+            region,
+            ax,
+            color=plt.cm.tab20(idx / len(points)),
+            alpha=0.3,
+            edgecolor='black'
+        )
+
+    # Plot path
+    gpd.GeoDataFrame(geometry=[path_line]).plot(ax=ax, color='red', linewidth=3)
+
+    # Plot breakdown and garage points
+    gpd.GeoDataFrame(geometry=[breakdown_point]).plot(ax=ax, color='red', markersize=200, zorder=4)
+    gpd.GeoDataFrame(geometry=[garage_point]).plot(ax=ax, color='blue', markersize=200, zorder=4)
+
+    # Add boundary and formatting
+    gpd.GeoDataFrame(geometry=[boundary_shape.boundary]).plot(ax=ax, color='black', linewidth=1)
+    ax.set_title('Breakdown Response Path', fontsize=18)
+    ax.set_axis_off()
+
+    plt.tight_layout()
+    plt.savefig('plots/breakdown_response.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    print("Breakdown scenario plot saved to plots/breakdown_response.png")
+
 def main():
     print("Starting Bristol region Voronoi analysis...")
 
@@ -621,6 +703,9 @@ def main():
         plt.savefig('plots/isochrone_map.png', dpi=300, bbox_inches='tight')
         plt.close()
         print("Isochrone map saved to plots/isochrone_map.png")
+
+    # Add breakdown simulation
+    simulate_breakdown_scenario(G, network_regions, points, boundary_shape)
 
 if __name__ == "__main__":
     main()
