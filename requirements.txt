@@ -1,0 +1,11 @@
+pandas
+numpy
+geopandas
+shapely
+osmnx
+geovoronoi
+matplotlib
+plotly
+networkx
+tqdm
+requests
