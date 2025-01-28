@@ -4,6 +4,9 @@ from typing import List, Tuple
 from enum import Enum
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
+import pickle
+from pathlib import Path
 
 import shapely
 import networkx as nx
@@ -28,7 +31,7 @@ class VoronoiType(Enum):
 class Network:
     def __init__(self, garages: GarageData, constituencies: List[str]):
         self.garages = garages
-        self.constituencies = constituencies
+        self.constituencies = sorted(constituencies)  # Sort for consistent hashing
         self.boundary_shape = None
         self._constituency_boundaries = {}
         self.network = self.get_network()
@@ -37,10 +40,20 @@ class Network:
             self.garages.gdf.geometry.within(self.get_network().geometry.iloc[0])
         ]
         logging.debug(f"Filtered to {len(self.filtered_garages)} garages within boundary")
-        self.euclidean_voronoi = self.get_euclidean_voronoi()
-        self.network_voronoi = self.get_network_voronoi()
-        self.traffic_voronoi = {}
-        self._init_traffic_voronoi()
+
+        # Cache key generation
+        self.cache_key = self._generate_cache_key()
+        self.cache_file = Path(f"data/voronoi_cache_{self.cache_key}.pkl")
+
+        # Try loading from cache
+        if not self._load_from_cache():
+            # Cache miss - calculate fresh
+            self.euclidean_voronoi = self.get_euclidean_voronoi()
+            self.network_voronoi = self.get_network_voronoi()
+            self.traffic_voronoi = {}
+            self._init_traffic_voronoi()
+            self._save_to_cache()
+
         self.constituency_populations = self.load_constituency_populations()
 
     def _init_traffic_voronoi(self):
@@ -983,3 +996,48 @@ class Network:
         """Load population data from CSV"""
         pop_df = pd.read_csv("data/constituency_populations.csv")
         return dict(zip(pop_df['constituency'], pop_df['population']))
+
+    def _generate_cache_key(self) -> str:
+        """Generate unique hash key for current configuration"""
+        # Convert geometry series to individual WKB bytes and concatenate
+        geometry_bytes = b''.join(self.filtered_garages.geometry.apply(lambda g: g.wkb).tolist())
+
+        hash_data = {
+            'constituencies': self.constituencies,
+            'garage_count': len(self.filtered_garages),
+            'garage_hash': hashlib.sha256(geometry_bytes).hexdigest()[:16],
+            'version': 1  # Increment if cache format changes
+        }
+        return hashlib.sha256(str(hash_data).encode()).hexdigest()[:16]
+
+    def _load_from_cache(self) -> bool:
+        """Attempt to load Voronoi data from cache"""
+        if not self.cache_file.exists():
+            logging.info("No cache found, calculating fresh")
+            return False
+
+        try:
+            with open(self.cache_file, 'rb') as f:
+                cache_data = pickle.load(f)
+                self.euclidean_voronoi = cache_data['euclidean']
+                self.network_voronoi = cache_data['network']
+                self.traffic_voronoi = cache_data['traffic']
+                logging.info(f"Loaded Voronoi data from cache {self.cache_file}")
+                return True
+        except Exception as e:
+            logging.warning(f"Failed to load cache: {e}, recalculating")
+            return False
+
+    def _save_to_cache(self):
+        """Save current Voronoi data to cache"""
+        try:
+            cache_data = {
+                'euclidean': self.euclidean_voronoi,
+                'network': self.network_voronoi,
+                'traffic': self.traffic_voronoi
+            }
+            with open(self.cache_file, 'wb') as f:
+                pickle.dump(cache_data, f)
+            logging.info(f"Saved Voronoi data to cache {self.cache_file}")
+        except Exception as e:
+            logging.error(f"Failed to save cache: {e}")

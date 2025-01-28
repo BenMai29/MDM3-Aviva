@@ -44,23 +44,25 @@ if __name__ == "__main__":
     bristol_network = Network(garage_data, constituencies)
 
     # Run visualization
-    # bristol_network.show_network(
-    #     show_garages=True,
-    #     show_roads=True,
-    #     show_constituencies=True,
-    #     show_traffic=False,
-    #     voronoi_type=VoronoiType.NETWORK
-    # )
+    bristol_network.show_network(
+        show_garages=True,
+        show_roads=True,
+        show_constituencies=True,
+        show_traffic=False,
+        voronoi_type=VoronoiType.NETWORK,
+        traffic_hour=8,
+        # coord=(51.574083, -2.616579)
+    )
 
     # Run simulation
-    simulator = BreakdownSimulator(
-        network=bristol_network,
-        vans_per_garage=2
-    )
-    simulator.run(
-        simulation_time=60*8*1,  # 5 days
-        breakdown_rate=5  # Average time between breakdowns in minutes
-    )
+    # simulator = BreakdownSimulator(
+    #     network=bristol_network,
+    #     vans_per_garage=2
+    # )
+    # simulator.run(
+    #     simulation_time=60*8*1,  # 5 days
+    #     breakdown_rate=5  # Average time between breakdowns in minutes
+    # )
 
 # bristol_network.show_network(
 #     show_garages=True,
