@@ -1,0 +1,100 @@
+=== Simulation Results ===
+Run number: 3
+Voronoi type: traffic
+Vans per garage: 200
+
+Garage BS15 3JD:
+  Total breakdowns: 3
+  Average total job time: 40.7 minutes
+  Maximum vans out simultaneously: 3
+
+Garage NP20 2JP:
+  Total breakdowns: 2
+  Average total job time: 50.4 minutes
+  Maximum vans out simultaneously: 2
+
+Garage NP19 4SU:
+  Total breakdowns: 4
+  Average total job time: 83.5 minutes
+  Maximum vans out simultaneously: 4
+
+Garage GL2 5DQ:
+  No breakdowns handled
+
+Garage GL2 5YB:
+  Total breakdowns: 3
+  Average total job time: 70.7 minutes
+  Maximum vans out simultaneously: 3
+
+Garage BS5 9JD:
+  Total breakdowns: 1
+  Average total job time: 42.8 minutes
+  Maximum vans out simultaneously: 1
+
+Garage BS34 7QS:
+  No breakdowns handled
+
+Garage BS34 6QB:
+  Total breakdowns: 6
+  Average total job time: 49.8 minutes
+  Maximum vans out simultaneously: 5
+
+Garage BS10 7TU:
+  Total breakdowns: 1
+  Average total job time: 57.6 minutes
+  Maximum vans out simultaneously: 1
+
+Garage BS22 8NA:
+  Total breakdowns: 1
+  Average total job time: 48.2 minutes
+  Maximum vans out simultaneously: 1
+
+Garage GL2 5DB:
+  Total breakdowns: 4
+  Average total job time: 47.8 minutes
+  Maximum vans out simultaneously: 4
+
+Garage BS2 0PX:
+  Total breakdowns: 10
+  Average total job time: 43.5 minutes
+  Maximum vans out simultaneously: 9
+
+Garage BS30 8XJ:
+  Total breakdowns: 11
+  Average total job time: 68.7 minutes
+  Maximum vans out simultaneously: 10
+
+Garage NP19 4SL:
+  Total breakdowns: 7
+  Average total job time: 122.1 minutes
+  Maximum vans out simultaneously: 7
+
+Garage GL1 2RN:
+  Total breakdowns: 3
+  Average total job time: 56.1 minutes
+  Maximum vans out simultaneously: 3
+
+Garage BS23 3YX:
+  No breakdowns handled
+
+Garage BS32 4QD:
+  Total breakdowns: 5
+  Average total job time: 57.8 minutes
+  Maximum vans out simultaneously: 5
+
+Garage BS11 0YA:
+  No breakdowns handled
+
+Garage BS5 6NJ:
+  No breakdowns handled
+
+Garage BS48 1JJ:
+  Total breakdowns: 6
+  Average total job time: 77.3 minutes
+  Maximum vans out simultaneously: 6
+
+Garage BS11 8DX:
+  Total breakdowns: 1
+  Average total job time: 38.6 minutes
+  Maximum vans out simultaneously: 1
+

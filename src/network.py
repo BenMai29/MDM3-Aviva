@@ -809,15 +809,15 @@ class Network:
             logging.error(f"Error retrieving garage data for ID {garage_id}: {e}")
             return None
 
-    def analyse_route(self, coord: Tuple[float, float], voronoi_type: VoronoiType, hour: int = None) -> dict:
+    def analyse_route(self, coord: Tuple[float, float], voronoi_type: VoronoiType, hour: int = None, cached_network: nx.Graph = None) -> dict:
         """Analyze route from responsible garage to coordinate"""
+        # Use cached network if provided
+        G = cached_network if cached_network is not None else self.get_road_network()
+
         # Find responsible garage
         garage = self.find_garage_for_coordinate(coord, voronoi_type, hour)
         if not garage:
             return None
-
-        # Get road network
-        G = self.get_road_network()
 
         # Get garage node
         try:

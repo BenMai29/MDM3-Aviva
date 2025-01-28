@@ -3,9 +3,9 @@ from network import Network, VoronoiType
 from simulator import BreakdownSimulator
 import logging
 
-logging.basicConfig(level=logging.DEBUG,
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logging.getLogger('matplotlib').setLevel(logging.WARNING)
+# logging.basicConfig(level=logging.DEBUG,
+#                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# logging.getLogger('matplotlib').setLevel(logging.WARNING)
 
 # ---
 
@@ -44,25 +44,27 @@ if __name__ == "__main__":
     bristol_network = Network(garage_data, constituencies)
 
     # Run visualization
-    bristol_network.show_network(
-        show_garages=True,
-        show_roads=True,
-        show_constituencies=True,
-        show_traffic=False,
-        voronoi_type=VoronoiType.NETWORK,
-        traffic_hour=8,
-        # coord=(51.574083, -2.616579)
-    )
+    # bristol_network.show_network(
+    #     show_garages=True,
+    #     show_roads=True,
+    #     show_constituencies=False,
+    #     show_traffic=False,
+    #     voronoi_type=VoronoiType.NETWORK,
+    #     traffic_hour=8,
+    #     coord=(51.574083, -2.616579)
+    # )
 
-    # Run simulation
-    # simulator = BreakdownSimulator(
-    #     network=bristol_network,
-    #     vans_per_garage=2
-    # )
-    # simulator.run(
-    #     simulation_time=60*8*1,  # 5 days
-    #     breakdown_rate=5  # Average time between breakdowns in minutes
-    # )
+    # Run simulation with multiple runs
+    simulator = BreakdownSimulator(
+        network=bristol_network,
+        vans_per_garage=200,
+        voronoi_type=VoronoiType.TRAFFIC
+    )
+    simulator.run(
+        simulation_days=1,
+        breakdown_rate=8.165342563671928,    # Average time between breakdowns in minutes
+        num_runs=5
+    )
 
 # bristol_network.show_network(
 #     show_garages=True,
