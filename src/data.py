@@ -154,6 +154,8 @@ class TrafficData:
         hourly_avg = daily_avg.groupby(['road_type', 'hour'])['all_motor_vehicles'].mean().reset_index()
 
         # Create the plot
+        plt.rcParams.update({'font.size': 14})
+        plt.rcParams.update({'font.family': 'Palatino'})
         plt.figure(figsize=(14, 6))  # Made figure wider to accommodate legend
         road_types = ['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified']
         markers = ['o', 's', '^', 'D', 'v', 'p']
@@ -171,6 +173,7 @@ class TrafficData:
         plt.xticks(range(7,19), [f'{h:02d}:00' for h in range(7,19)])
 
         plt.tight_layout()
+        plt.savefig('data/average_traffic_counts.png', dpi=300)
         plt.show()
 
 class GarageData:
