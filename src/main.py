@@ -53,7 +53,7 @@ bristol_network.show_network(
     show_garages=True,
     show_roads=True,
     show_traffic=True,
-    voronoi_type=VoronoiType.TRAFFIC,
+    voronoi_type=VoronoiType.NONE,
     traffic_hour=8,
-    coord=(51.574083, -2.616579)
+    # coord=(51.574083, -2.616579)
 )

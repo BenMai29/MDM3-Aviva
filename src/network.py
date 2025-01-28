@@ -33,10 +33,20 @@ class Network:
         self.network = self.get_network()
         # Cache the road network with travel times
         self._road_network = None
-        self.euclidean_voronoi = self.get_euclidean_voronoi()
-        self.network_voronoi = self.get_network_voronoi()
+        
+        # Only initialize Voronoi regions if needed
+        self.euclidean_voronoi = None
+        self.network_voronoi = None
         self.traffic_voronoi = {}
-        self._init_traffic_voronoi()
+
+    def _ensure_voronoi_initialized(self, voronoi_type: VoronoiType):
+        """Lazy initialization of Voronoi regions when needed"""
+        if voronoi_type == VoronoiType.EUCLIDEAN and self.euclidean_voronoi is None:
+            self.euclidean_voronoi = self.get_euclidean_voronoi()
+        elif voronoi_type == VoronoiType.NETWORK and self.network_voronoi is None:
+            self.network_voronoi = self.get_network_voronoi()
+        elif voronoi_type == VoronoiType.TRAFFIC and not self.traffic_voronoi:
+            self._init_traffic_voronoi()
 
     def _init_traffic_voronoi(self):
         """Optimised traffic Voronoi initialisation with precomputed factors"""
@@ -498,22 +508,106 @@ class Network:
 
         if show_roads:
             logging.debug("Adding road network to plot")
+            road_network = self.get_road_network()
             roads_gdf = gpd.GeoDataFrame(geometry=[
-                data['geometry'] for _, _, data in self.get_road_network().edges(data=True)
+                data['geometry'] for _, _, data in road_network.edges(data=True)
                 if 'geometry' in data
             ])
 
             roads_gdf.plot(ax=ax, color='black', linewidth=0.5, alpha=0.3)
 
-            if show_traffic:
+            if show_traffic and voronoi_type == VoronoiType.NONE:
                 logging.debug("Adding traffic data visualisation")
                 traffic_df = TrafficData().df
-                # TODO: Add traffic data visualiation
+                
+                # Filter points within boundary
+                traffic_points = gpd.GeoDataFrame(
+                    traffic_df,
+                    geometry=gpd.points_from_xy(traffic_df.longitude, traffic_df.latitude),
+                    crs="EPSG:4326"
+                )
+                mask = traffic_points.geometry.within(self.boundary_shape)
+                filtered_traffic = traffic_points[mask].copy()
+                
+                if 'all_motor_vehicles' in filtered_traffic.columns:
+                    # Create scatter plot with colormap for measurement points using crosses
+                    scatter = ax.scatter(
+                        filtered_traffic.longitude,
+                        filtered_traffic.latitude,
+                        c=filtered_traffic['all_motor_vehicles'],
+                        cmap='RdYlGn_r',  # Red-Yellow-Green colormap (reversed)
+                        marker='x',  # Cross marker
+                        s=30,  # Smaller size
+                        alpha=0.7,
+                        zorder=2,
+                        norm=plt.Normalize(
+                            filtered_traffic['all_motor_vehicles'].quantile(0.1),
+                            filtered_traffic['all_motor_vehicles'].quantile(0.9)
+                        )
+                    )
+                    
+                    # Color roads based on nearest traffic points
+                    for _, road in roads_gdf.iterrows():
+                        # Get road geometry points
+                        if isinstance(road.geometry, LineString):
+                            road_points = np.array(road.geometry.coords)
+                        else:  # MultiLineString
+                            road_points = np.array([p for line in road.geometry.geoms for p in line.coords])
+                        
+                        # Calculate distances to all traffic points for each road point
+                        traffic_points_array = np.column_stack((filtered_traffic.longitude, filtered_traffic.latitude))
+                        road_traffic_values = []
+                        
+                        for road_point in road_points:
+                            distances = np.sqrt(np.sum((traffic_points_array - road_point) ** 2, axis=1))
+                            # Use inverse distance weighting for the 3 nearest points
+                            k = 3
+                            nearest_indices = np.argpartition(distances, k)[:k]
+                            weights = 1 / (distances[nearest_indices] ** 2)
+                            weights = weights / np.sum(weights)  # normalize weights
+                            road_traffic_values.append(
+                                np.sum(weights * filtered_traffic['all_motor_vehicles'].iloc[nearest_indices])
+                            )
+                        
+                        # Use average traffic value for the road segment
+                        avg_traffic = np.mean(road_traffic_values)
+                        
+                        # Plot the road with color based on traffic using new colormap
+                        road_color = plt.cm.RdYlGn_r(  # Red-Yellow-Green colormap (reversed)
+                            plt.Normalize(
+                                filtered_traffic['all_motor_vehicles'].quantile(0.1),
+                                filtered_traffic['all_motor_vehicles'].quantile(0.9)
+                            )(avg_traffic)
+                        )
+                        
+                        if isinstance(road.geometry, LineString):
+                            ax.plot(*road.geometry.xy, color=road_color, linewidth=2, alpha=0.7, zorder=1)
+                        else:  # MultiLineString
+                            for line in road.geometry.geoms:
+                                ax.plot(*line.xy, color=road_color, linewidth=2, alpha=0.7, zorder=1)
+                    
+                    # Add colorbar
+                    plt.colorbar(
+                        scatter,
+                        label='Traffic Volume (vehicles per day)',
+                        ax=ax
+                    )
+                    
+                    logging.debug(f"Added {len(filtered_traffic)} traffic measurement points and colored road network")
+                else:
+                    logging.warning("No traffic volume data available")
 
         if show_garages:
             logging.debug("Adding garage locations to plot")
             filtered_garages = self.garages.gdf[self.garages.gdf.geometry.within(self.network.geometry.iloc[0])]
-            filtered_garages.plot(ax=ax, color='red', markersize=40, zorder=3)
+            # Plot garages as small black dots
+            filtered_garages.plot(
+                ax=ax, 
+                color='black',
+                markersize=20,  # Smaller size
+                marker='o',
+                zorder=3
+            )
 
         if coord:
             logging.debug(f"Adding coordinate {coord} to plot")
