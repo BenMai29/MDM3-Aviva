@@ -41,6 +41,7 @@ class Network:
         self.network_voronoi = self.get_network_voronoi()
         self.traffic_voronoi = {}
         self._init_traffic_voronoi()
+        self.constituency_populations = self.load_constituency_populations()
 
     def _init_traffic_voronoi(self):
         """Optimised traffic Voronoi initialisation with precomputed factors"""
@@ -830,7 +831,7 @@ class Network:
             # Create straight line between nodes if no geometry
             u_pt = (G.nodes[edge[0]]['x'], G.nodes[edge[0]]['y'])
             v_pt = (G.nodes[edge[1]]['x'], G.nodes[edge[1]]['y'])
-            edge_line = LineString([u_pt, v_pt])
+            edge_line = shapely.LineString([u_pt, v_pt])
 
         # Project point onto edge and get its position along the edge
         projected_point = edge_line.interpolate(edge_line.project(target_point))
@@ -977,3 +978,8 @@ class Network:
                 current_dist = next_dist
 
             return partial_coords
+
+    def load_constituency_populations(self):
+        """Load population data from CSV"""
+        pop_df = pd.read_csv("data/constituency_populations.csv")
+        return dict(zip(pop_df['constituency'], pop_df['population']))
