@@ -15,5 +15,5 @@ pip install -r requirements.txt
 Run the simulation demo using the command:
 
 ```
-python src/main.py
+python src/demo.py
 ```
