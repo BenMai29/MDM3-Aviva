@@ -1,11 +1,19 @@
-MDM3, Group 2: Aviva
+# MDM3 Group 2 - Aviva
+A project which assesses the distribution of garages across the UK, and calculates the drive times to each garage from a given point.
 
-bristol.py - Main focus, contains Bristol voronoi tessellation for different distance metrics and calculates drive times to a given point.
+This demo focuses on the South West region of the UK, around Bristol and South Wales.
 
-voronoi.py - Contains a voronoi tessellation of the UK, can create plots for specific regions.
+All main code is found in the `src` directory. Old code is found in the `archive` directory.
 
-garages.py - Contains an interactive plot of the distribution of garages across the UK .
+## Running the code
+Install the requirements using:
 
-isochrone.py - Contains an isochrone plot of the drive times for each garage (10 mins, 30 mins, 1 hour).
+```
+pip install -r requirements.txt
+```
 
-Data - Includes traffic statistics, garage coordinates, collision statistics and population densities
+Run the simulation demo using the command:
+
+```
+python src/main.py
+```
