@@ -29,135 +29,131 @@ class VoronoiType(Enum):
     TRAFFIC = "traffic"
 
 class Network:
-    def __init__(self, garages: GarageData, constituencies: List[str]):
-        self.garages = garages
-        self.constituencies = sorted(constituencies)  # Sort for consistent hashing
-        self.boundary_shape = None
+    def __init__(self, garage_data, constituencies, voronoi_type: VoronoiType = None, traffic_hour: int = None, use_voronoi_cache: bool = True):
+        """Initialize network with garage data and constituency list
+
+        Args:
+            garage_data: GarageData object containing garage locations
+            constituencies: List of constituency names
+            voronoi_type: Type of Voronoi regions to calculate
+            traffic_hour: Specific hour for traffic Voronoi (7-18). Only used if voronoi_type is TRAFFIC
+            use_voronoi_cache: Whether to use cached Voronoi data
+        """
+        self.garage_data = garage_data
+        self.constituencies = sorted(constituencies)
         self._constituency_boundaries = {}
-        self.network = self.get_network()
+        self.boundary = None
+        self.filtered_garages = None
+        self.traffic_hour = traffic_hour
         self._road_network = None
-        self.filtered_garages = self.garages.gdf[
-            self.garages.gdf.geometry.within(self.get_network().geometry.iloc[0])
-        ]
-        logging.debug(f"Filtered to {len(self.filtered_garages)} garages within boundary")
 
-        # Cache key generation
-        self.cache_key = self._generate_cache_key()
-        self.cache_file = Path(f"data/voronoi_cache_{self.cache_key}.pkl")
+        # Get network boundary from constituencies
+        network = self.get_network()
+        self.boundary = network.geometry.iloc[0]
+        self.network = network
 
-        # Try loading from cache
-        if not self._load_from_cache():
-            # Cache miss - calculate fresh
-            self.euclidean_voronoi = self.get_euclidean_voronoi()
-            self.network_voronoi = self.get_network_voronoi()
+        # Filter garages to only those within boundary
+        self.filtered_garages = self._filter_garages()
+
+        # Initialize road network if we need it
+        if voronoi_type in [VoronoiType.NETWORK, VoronoiType.TRAFFIC] or voronoi_type is None:
+            self._road_network = self.get_road_network()
+
+        # Only initialize Voronoi if specifically requested
+        if voronoi_type is not None:
+            self.cache_key = self._generate_cache_key()
+            self.cache_file = Path(f"data/voronoi_cache_{self.cache_key}.pkl")
+
+            self.euclidean_voronoi = {}
+            self.network_voronoi = {}
             self.traffic_voronoi = {}
-            self._init_traffic_voronoi()
-            self._save_to_cache()
+
+            if use_voronoi_cache and self._load_from_cache():
+                logging.info(f"Loaded Voronoi data from cache {self.cache_file}")
+            else:
+                if voronoi_type == VoronoiType.EUCLIDEAN:
+                    self.euclidean_voronoi = self.get_euclidean_voronoi()
+                elif voronoi_type == VoronoiType.NETWORK:
+                    self.network_voronoi = self.get_network_voronoi()
+                elif voronoi_type == VoronoiType.TRAFFIC:
+                    self.traffic_voronoi = self.get_traffic_voronoi()
+
+                if use_voronoi_cache:
+                    self._save_to_cache()
 
         self.constituency_populations = self.load_constituency_populations()
 
+    def _filter_garages(self):
+        """Filter garages to only those within the network boundary"""
+        filtered = self.garage_data.gdf[self.garage_data.gdf.geometry.within(self.boundary)]
+        logging.debug(f"Filtered to {len(filtered)} garages within boundary")
+        return filtered
+
     def _init_traffic_voronoi(self):
-        """Optimised traffic Voronoi initialisation with precomputed factors"""
-        logging.debug("Optimised traffic Voronoi initialisation")
-        valid_hours = range(7, 19)
+        """Initialize traffic-weighted Voronoi regions"""
+        if not hasattr(self, 'traffic_voronoi'):
+            self.traffic_voronoi = {}
+        return self.traffic_voronoi
 
-        # Use cached road network
-        road_network = self.get_road_network()
+    def _calculate_voronoi_for_hour(self, road_network, filtered_garages, hour):
+        """Calculate traffic-weighted Voronoi regions for a specific hour"""
+        logging.debug(f"Calculating traffic Voronoi for hour {hour}")
 
-        # Get filtered garages once
-        filtered_garages = self.garages.gdf[self.garages.gdf.geometry.within(self.network.geometry.iloc[0])]
-        if len(filtered_garages) == 0:
-            logging.warning("No garages found within boundary")
-            return
-
-        # Convert garage points to network nodes and create bidirectional mapping
-        garage_nodes = {}
-        node_to_garage = {}
-        for idx, garage in filtered_garages.iterrows():
-            try:
-                nearest_node = ox.nearest_nodes(
-                    road_network,
-                    garage.geometry.x,
-                    garage.geometry.y
-                )
-                garage_nodes[idx] = nearest_node
-                node_to_garage[nearest_node] = idx
-            except nx.NetworkXPointlessConcept:
-                logging.warning(f"Garage {idx} could not be mapped to network")
-                continue
-
-        # Precompute traffic factors for all hours and road types
-        logging.debug("Precomputing traffic factors")
+        # Load and apply traffic factors
         traffic_data = TrafficData()
         traffic_factors = traffic_data.traffic_factors
 
-        # Create networks with precomputed weights for each hour
-        weighted_networks = {}
-        for hour in valid_hours:
-            G_hour = road_network.copy()
-            for u, v, k, data in G_hour.edges(data=True, keys=True):
-                highway = data.get('highway', 'default')
-                if isinstance(highway, list):
-                    highway = highway[0]
+        # Create a copy of the network for this hour's calculations
+        G = road_network.copy()
 
-                # Get traffic factor for this road type and hour
-                road_factors = traffic_factors.get(highway, traffic_factors['default'])
-                if isinstance(road_factors, dict):
-                    traffic_factor = road_factors.get(str(hour), 1.0)
-                else:
-                    traffic_factor = road_factors
+        # Apply traffic factors to network
+        for u, v, k, data in G.edges(data=True, keys=True):
+            highway = data.get('highway', 'default')
+            if isinstance(highway, list):
+                highway = highway[0]
 
-                # Apply factor to travel time
-                data['traffic_time'] = data['travel_time'] * traffic_factor
-            weighted_networks[hour] = G_hour
+            # Get traffic factor for this road type and hour
+            road_factors = traffic_factors.get(highway, traffic_factors['default'])
+            if isinstance(road_factors, dict):
+                traffic_factor = road_factors.get(str(hour), 1.0)
+            else:
+                traffic_factor = road_factors
 
-        logging.debug("Calculating Voronoi regions in parallel")
-        with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
-            # Submit all calculations to thread pool
-            future_to_hour = {
-                executor.submit(
-                    self._calculate_voronoi_for_hour,
-                    weighted_networks[hour],
-                    garage_nodes,
-                    node_to_garage  # NEW: Pass the mapping
-                ): hour
-                for hour in valid_hours
-            }
+            # Apply factor to travel time
+            data['traffic_time'] = data['travel_time'] * traffic_factor
 
-            # Collect results as they complete
-            for future in as_completed(future_to_hour):
-                hour = future_to_hour[future]
-                try:
-                    regions = future.result()
-                    if regions:
-                        self.traffic_voronoi[hour] = regions
-                        logging.debug(f"Completed traffic Voronoi for hour {hour}")
-                except Exception as e:
-                    logging.error(f"Error calculating traffic Voronoi for hour {hour}: {e}")
+        # Convert garage points to network nodes
+        garage_nodes = {}
+        node_to_garage = {}
+        for idx, garage in filtered_garages.iterrows():
+            nearest_node = ox.nearest_nodes(
+                G,
+                garage.geometry.x,
+                garage.geometry.y
+            )
+            garage_nodes[idx] = nearest_node
+            node_to_garage[nearest_node] = idx
 
-        logging.info(f"Initialised traffic Voronoi regions for {len(self.traffic_voronoi)} hours")
-
-    def _calculate_voronoi_for_hour(self, G, garage_nodes, node_to_garage):
-        """Calculate Voronoi regions for a pre-weighted network"""
-        # Calculate Voronoi cells using pre-weighted network
+        # Calculate Voronoi cells using traffic-weighted network
         try:
             assigner = nx.algorithms.voronoi.voronoi_cells(
                 G,
-                garage_nodes.values(),
+                list(garage_nodes.values()),
                 weight='traffic_time'
             )
         except nx.NetworkXUnfeasible:
-            logging.error("Voronoi cells calculation failed - empty graph?")
+            logging.error(f"Voronoi cells calculation failed for hour {hour}")
             return {}
 
         # Create region polygons from edge assignments
         voronoi_regions = {}
-        for garage_node_id, cell_nodes in assigner.items():
-            # Convert OSM node ID back to original garage index
-            garage_id = node_to_garage.get(garage_node_id)
+        for node_id, cell_nodes in assigner.items():
+            if node_id == "unreachable":
+                continue
+
+            # Get original garage index
+            garage_id = node_to_garage.get(node_id)
             if garage_id is None:
-                if garage_node_id != "unreachable":  # Filter out default error node
-                    logging.debug(f"Ignoring unmapped node {garage_node_id}")
                 continue
 
             # Get edges that are entirely within the cell
@@ -177,24 +173,22 @@ class Network:
             # Create polygon from edge network
             if cell_edges:
                 try:
-                    # Create valid polygon
                     buffer_distance = 0.0001
                     buffered_lines = [line.buffer(buffer_distance) for line in cell_edges]
                     merged = unary_union(buffered_lines)
 
-                    # Fix invalid geometries
                     if not merged.is_valid:
                         merged = merged.buffer(0)
 
                     polygon = merged.simplify(buffer_distance)
 
-                    if polygon.intersects(self.boundary_shape):
-                        region = polygon.intersection(self.boundary_shape)
+                    if polygon.intersects(self.boundary):
+                        region = polygon.intersection(self.boundary)
                         if region.is_valid and not region.is_empty:
                             voronoi_regions[garage_id] = region
 
                 except Exception as e:
-                    logging.error(f"Error creating region for garage {garage_id}: {e}")
+                    logging.error(f"Error creating region for garage {garage_id} at hour {hour}: {e}")
 
         return voronoi_regions
 
@@ -243,18 +237,17 @@ class Network:
     def get_network(self):
         logging.debug("Getting network from GeoJSON")
         geojson = self.load_geojson()
-        self.boundary_shape = geojson
+        self.boundary = geojson
         gdf = gpd.GeoDataFrame(geometry=[geojson])
         logging.debug("Created GeoDataFrame from boundary shape")
         return gdf
 
     def get_road_network(self):
-        """Get cached road network or create new one with travel times"""
-        if self._road_network is not None:
-            logging.debug("Using cached road network")
+        """Get road network from cache or download from OSM"""
+        # Return cached network if available
+        if hasattr(self, '_road_network') and self._road_network is not None:
             return self._road_network
 
-        logging.debug("Getting road network with travel times")
         ROAD_SPEEDS = {
             'motorway': 70,  # mph
             'trunk': 50,
@@ -266,49 +259,35 @@ class Network:
             'default': 30
         }
 
-        logging.debug("Creating network graph from boundary polygon")
-        cache_path = "data/bristol_network.graphml"
-
+        cache_path = "data/road_network.graphml"
         if os.path.exists(cache_path):
-            logging.debug("Loading cached road network from file")
+            logging.debug("Loading road network from cache")
             road_network = ox.load_graphml(cache_path)
         else:
             logging.debug("Downloading road network from OSM")
-            road_network = ox.graph_from_polygon(self.boundary_shape, network_type='drive')
+            road_network = ox.graph_from_polygon(self.boundary, network_type='drive')
             logging.debug("Caching road network to file")
             ox.save_graphml(road_network, cache_path)
 
-        logging.info(f"Created graph with {len(road_network.nodes)} nodes and {len(road_network.edges)} edges")
-
-        # Calculate travel times once
-        edge_count = 0
+        # Add travel time to edges based on road type speeds
         for u, v, k, data in road_network.edges(data=True, keys=True):
-            if 'travel_time' not in data:  # Only calculate if not already present
+            if 'length' in data:
                 highway = data.get('highway', 'default')
                 if isinstance(highway, list):
                     highway = highway[0]
                 speed = ROAD_SPEEDS.get(highway, ROAD_SPEEDS['default'])
                 speed_ms = speed * 0.44704  # Convert mph to m/s
+                data['travel_time'] = data['length'] / speed_ms
+            else:
+                # If length not available, calculate from coordinates
+                start = road_network.nodes[u]
+                end = road_network.nodes[v]
+                dist = ((start['x'] - end['x'])**2 + (start['y'] - end['y'])**2)**0.5
+                data['length'] = dist
+                speed = ROAD_SPEEDS['default']
+                speed_ms = speed * 0.44704
+                data['travel_time'] = dist / speed_ms
 
-                if 'length' in data:
-                    data['travel_time'] = data['length'] / speed_ms
-                else:
-                    if 'geometry' in data:
-                        data['length'] = data['geometry'].length
-                        data['travel_time'] = data['length'] / speed_ms
-                    else:
-                        start = road_network.nodes[u]
-                        end = road_network.nodes[v]
-                        dist = ((start['x'] - end['x'])**2 + (start['y'] - end['y'])**2)**0.5
-                        data['length'] = dist
-                        data['travel_time'] = dist / speed_ms
-                edge_count += 1
-                if edge_count % 10000 == 0:
-                    logging.debug(f"Processed {edge_count} edges")
-
-        logging.info(f"Completed travel time calculations for {edge_count} edges")
-
-        # Cache the network
         self._road_network = road_network
         return road_network
 
@@ -333,7 +312,7 @@ class Network:
         points = np.array([[g['geometry'].x, g['geometry'].y] for g in garage_data])
 
         # Calculate Voronoi regions
-        poly_shapes, pts = gv.voronoi_regions_from_coords(points, self.boundary_shape)
+        poly_shapes, pts = gv.voronoi_regions_from_coords(points, self.boundary)
 
         # Match regions to garages using spatial containment
         voronoi_regions = {}
@@ -368,7 +347,7 @@ class Network:
         logging.debug("Calculating precise network Voronoi regions")
 
         # Get garage points within boundary
-        filtered_garages = self.garages.gdf[self.garages.gdf.geometry.within(self.network.geometry.iloc[0])]
+        filtered_garages = self.garage_data.gdf[self.garage_data.gdf.geometry.within(self.network.geometry.iloc[0])]
 
         if len(filtered_garages) == 0:
             logging.warning("No garages found within boundary")
@@ -438,8 +417,8 @@ class Network:
                     # Simplify the merged polygon to remove artifacts
                     polygon = merged.simplify(buffer_distance)
 
-                    if polygon.intersects(self.boundary_shape):
-                        region = polygon.intersection(self.boundary_shape)
+                    if polygon.intersects(self.boundary):
+                        region = polygon.intersection(self.boundary)
                         if region.is_valid and not region.is_empty:
                             voronoi_regions[garage_id] = region  # Use original garage index
 
@@ -449,101 +428,41 @@ class Network:
         logging.info(f"Created {len(voronoi_regions)} non-overlapping network Voronoi regions")
         return voronoi_regions
 
-    def get_traffic_voronoi(self, hour: int = None):
-        """Calculate traffic-weighted Voronoi regions using traffic factors for a given hour"""
-        if not 7 <= hour <= 18:
-            logging.warning(f"Hour {hour} outside valid range (7-18), using default weights")
-            return None
+    def get_traffic_voronoi(self):
+        """Calculate traffic-weighted Voronoi regions for specific hour"""
+        logging.debug("Calculating traffic Voronoi regions")
+        if not hasattr(self, '_road_network'):
+            self._road_network = self.get_road_network()
 
-        logging.debug(f"Calculating traffic-weighted Voronoi regions for hour {hour}")
+        if not self.traffic_hour or not 7 <= self.traffic_hour <= 18:
+            logging.warning(f"Invalid traffic hour {self.traffic_hour}, using default hour 8")
+            self.traffic_hour = 8
 
-        # Get garage points within boundary
-        filtered_garages = self.garages.gdf[self.garages.gdf.geometry.within(self.network.geometry.iloc[0])]
-
-        if len(filtered_garages) == 0:
-            logging.warning("No garages found within boundary")
-            return None
-
-        # Get the road network
-        road_network = self.get_road_network()
-
-        # Load and apply traffic factors
-        traffic_data = TrafficData()
-        traffic_factors = traffic_data.traffic_factors
-
-        # Apply traffic factors to network
-        logging.debug("Applying traffic factors to network")
-        for u, v, k, data in road_network.edges(data=True, keys=True):
-            highway = data.get('highway', 'default')
-            if isinstance(highway, list):
-                highway = highway[0]
-
-            # Get traffic factor for this road type and hour
-            road_factors = traffic_factors.get(highway, traffic_factors['default'])
-            if isinstance(road_factors, dict):
-                traffic_factor = road_factors.get(str(hour), 1.0)
-            else:
-                traffic_factor = road_factors
-
-            # Apply factor to travel time
-            data['traffic_time'] = data['travel_time'] * traffic_factor
-
-        # Convert garage points to network nodes
-        garage_nodes = {}
-        for idx, garage in filtered_garages.iterrows():
-            nearest_node = ox.nearest_nodes(
-                road_network,
-                garage.geometry.x,
-                garage.geometry.y
+        traffic_voronoi = {}
+        try:
+            regions = self._calculate_voronoi_for_hour(
+                self._road_network,
+                self.filtered_garages,
+                self.traffic_hour
             )
-            garage_nodes[idx] = nearest_node
+            traffic_voronoi[self.traffic_hour] = regions
+            logging.debug(f"Calculated traffic Voronoi for hour {self.traffic_hour}")
+        except Exception as e:
+            logging.error(f"Failed to calculate traffic Voronoi for hour {self.traffic_hour}: {e}")
 
-        # Calculate shortest paths using traffic-weighted times
-        logging.debug("Calculating traffic-weighted shortest paths")
-        assigner = nx.algorithms.voronoi.voronoi_cells(
-            road_network,
-            garage_nodes.values(),
-            weight='traffic_time'
-        )
+        return traffic_voronoi
 
-        # Create region polygons from edge assignments
-        voronoi_regions = {}
-        for garage_id, cell_nodes in assigner.items():
-            # Get edges that are entirely within the cell (both nodes in cell)
-            cell_edges = []
-            for u, v, data in road_network.edges(data=True):
-                if u in cell_nodes and v in cell_nodes:
-                    if 'geometry' in data:
-                        # Use the actual road geometry if available
-                        cell_edges.append(data['geometry'])
-                    else:
-                        # Create straight line if no geometry
-                        u_data = road_network.nodes[u]
-                        v_data = road_network.nodes[v]
-                        cell_edges.append(LineString([
-                            (u_data['x'], u_data['y']),
-                            (v_data['x'], v_data['y'])
-                        ]))
-
-            # Create polygon from edge network
-            if cell_edges:
-                # Buffer each line slightly and union them
-                buffer_distance = 0.0001  # Adjust based on coordinate system
-                buffered_lines = [line.buffer(buffer_distance) for line in cell_edges]
-                merged = unary_union(buffered_lines)
-
-                # Simplify the merged polygon to remove artifacts
-                polygon = merged.simplify(buffer_distance)
-
-                if polygon.intersects(self.boundary_shape):
-                    region = polygon.intersection(self.boundary_shape)
-                    if not region.is_empty:
-                        voronoi_regions[garage_id] = region
-
-        logging.info(f"Created {len(voronoi_regions)} traffic-weighted Voronoi regions")
-        return voronoi_regions
-
-    def show_network(self, show_garages=False, show_roads=False, show_constituencies=False, show_traffic=False, voronoi_type: VoronoiType = None, traffic_hour: int = None, coord: Tuple[float, float] = None):
+    def show_network(
+            self,
+            show_garages=False,
+            show_roads=False,
+            show_constituencies=False,
+            show_traffic=False,
+            voronoi_type: VoronoiType = None,
+            traffic_hour: int = None,
+            coord: Tuple[float, float] = None,
+            show_garage_labels=False,
+            ):
         """
         Plot network visualisation with optional layers
 
@@ -553,6 +472,7 @@ class Network:
             show_constituencies (bool): Whether to show constituency boundaries
             show_traffic (bool): Whether to show the traffic data
             voronoi_type (VoronoiType): Type of Voronoi diagram to display (if any)
+            show_garage_labels (bool): Whether to show garage postcode labels
         """
         logging.debug("Plotting network visualisation")
 
@@ -567,48 +487,52 @@ class Network:
                 constituency_gdf.plot(
                     ax=ax,
                     facecolor='none',  # No fill
-                    edgecolor='blue',  # Blue border
+                    edgecolor='black',  # Blue border
                     linewidth=2,       # Thicker line
                     label=name
                 )
 
                 # Add constituency name label at centroid
-                centroid = boundary.centroid
-                plt.annotate(
-                    name,
-                    xy=(centroid.x, centroid.y),
-                    xytext=(3, 3),
-                    textcoords="offset points",
-                    fontsize=8,
-                    alpha=0.7,
-                    bbox=dict(
-                        facecolor='white',
-                        alpha=0.7,
-                        edgecolor='none',
-                        pad=0.5
-                    )
-                )
+                # centroid = boundary.centroid
+                # plt.annotate(
+                #     name,
+                #     xy=(centroid.x, centroid.y),
+                #     fontsize=6,
+                #     alpha=1.0,
+                #     bbox=dict(
+                #         facecolor='white',
+                #         alpha=0.7,
+                #         edgecolor='none',
+                #         pad=0.5
+                #     )
+                # )
+
+        # Store region colors for garage markers
+        garage_colors = {}
+        filtered_garages = self.garage_data.gdf[self.garage_data.gdf.geometry.within(self.network.geometry.iloc[0])]
 
         if voronoi_type:
             logging.debug(f"Adding {voronoi_type.value} Voronoi regions to plot")
-            filtered_garages = self.garages.gdf[self.garages.gdf.geometry.within(self.network.geometry.iloc[0])]
 
             if voronoi_type == VoronoiType.NONE:
                 pass
             elif voronoi_type == VoronoiType.EUCLIDEAN and self.euclidean_voronoi:
-                for idx, region in enumerate(self.euclidean_voronoi.values()):
+                for idx, (garage_id, region) in enumerate(self.euclidean_voronoi.items()):
                     if isinstance(region, (shapely.Polygon, shapely.MultiPolygon)):
                         color = plt.cm.tab20(idx / len(filtered_garages))
+                        garage_colors[garage_id] = color
                         gpd.GeoDataFrame(geometry=[region]).plot(
                             ax=ax,
                             color=color,
                             alpha=0.7,
-                            edgecolor=color
+                            edgecolor=color,
+                            # linewidth=1  # Added thicker edges
                         )
             elif voronoi_type == VoronoiType.NETWORK and self.network_voronoi:
-                for idx, region in enumerate(self.network_voronoi.values()):
+                for idx, (garage_id, region) in enumerate(self.network_voronoi.items()):
                     if isinstance(region, (shapely.Polygon, shapely.MultiPolygon)):
                         color = plt.cm.tab20(idx / len(filtered_garages))
+                        garage_colors[garage_id] = color
                         gpd.GeoDataFrame(geometry=[region]).plot(
                             ax=ax,
                             color=color,
@@ -616,23 +540,21 @@ class Network:
                             edgecolor=color
                         )
             elif voronoi_type == VoronoiType.TRAFFIC:
-                if traffic_hour is None:
-                    logging.warning("No hour specified for traffic Voronoi visualisation")
-                    return
-
                 logging.debug(f"Adding traffic-weighted Voronoi regions for hour {traffic_hour}")
-                if traffic_hour in self.traffic_voronoi:
-                    for idx, region in enumerate(self.traffic_voronoi[traffic_hour].values()):
+                if hasattr(self, 'traffic_voronoi') and self.traffic_voronoi and (traffic_hour in self.traffic_voronoi):
+                    for idx, (garage_id, region) in enumerate(self.traffic_voronoi[traffic_hour].items()):
                         if isinstance(region, (shapely.Polygon, shapely.MultiPolygon)):
                             color = plt.cm.tab20(idx / len(filtered_garages))
+                            garage_colors[garage_id] = color
                             gpd.GeoDataFrame(geometry=[region]).plot(
                                 ax=ax,
                                 color=color,
                                 alpha=0.7,
-                                edgecolor=color
+                                edgecolor=color,
+                                linewidth=1
                             )
                 else:
-                    logging.warning(f"No traffic-weighted Voronoi regions available for hour {traffic_hour}")
+                    logging.debug("No traffic-weighted Voronoi regions available; skipping traffic Voronoi layer.")
 
         if show_roads:
             logging.debug("Adding road network to plot")
@@ -650,8 +572,33 @@ class Network:
 
         if show_garages:
             logging.debug("Adding garage locations to plot")
-            filtered_garages = self.garages.gdf[self.garages.gdf.geometry.within(self.network.geometry.iloc[0])]
-            filtered_garages.plot(ax=ax, color='red', markersize=40, zorder=3)
+            # Plot garages with matching region colors
+            for idx, garage in filtered_garages.iterrows():
+                color = garage_colors.get(idx, 'red')  # Default to red if no region color found
+                plt.scatter(
+                    garage.geometry.x,
+                    garage.geometry.y,
+                    color=color,
+                    edgecolor='black',
+                    s=200,
+                    zorder=3,
+                    marker='X'
+                )
+
+                if show_garage_labels:
+                    plt.annotate(
+                        garage['Postcode'],
+                        xy=(garage.geometry.x, garage.geometry.y),
+                        xytext=(5, 5),
+                        textcoords='offset points',
+                        fontsize=8,
+                        bbox=dict(
+                            facecolor='white',
+                            alpha=0.7,
+                            edgecolor='none',
+                            pad=0.5
+                        )
+                    )
 
         if coord:
             logging.debug(f"Adding coordinate {coord} to plot")
@@ -717,7 +664,7 @@ class Network:
         original_point = shapely.Point(coord[1], coord[0])
 
         # First check if point is within boundary
-        if not self.boundary_shape.contains(original_point):
+        if not self.boundary.contains(original_point):
             logging.warning(f"Coordinate {coord} is outside the network boundary")
             return None
 
@@ -809,188 +756,31 @@ class Network:
             logging.error(f"Error retrieving garage data for ID {garage_id}: {e}")
             return None
 
-    def analyse_route(self, coord: Tuple[float, float], voronoi_type: VoronoiType, hour: int = None, cached_network: nx.Graph = None) -> dict:
-        """Analyze route from responsible garage to coordinate"""
-        # Use cached network if provided
-        G = cached_network if cached_network is not None else self.get_road_network()
+    def analyse_route(self, coord: Tuple[float, float], voronoi_type: VoronoiType = None, hour: int = None, cached_network = None) -> dict:
+        """Analyze route from coordinate to nearest garage
 
-        # Find responsible garage
-        garage = self.find_garage_for_coordinate(coord, voronoi_type, hour)
-        if not garage:
-            return None
+        Args:
+            coord: (latitude, longitude) tuple
+            voronoi_type: Not used anymore, kept for backwards compatibility
+            hour: Hour of day for traffic weighting (7-18)
+            cached_network: Pre-weighted network graph (optional)
 
-        # Get garage node
-        try:
-            garage_node = ox.nearest_nodes(
-                G,
-                garage['geometry'].x,
-                garage['geometry'].y
-            )
-        except KeyError:
-            logging.error("Garage location invalid")
-            return None
+        Returns:
+            dict: Analysis results including garage info and route metrics
+        """
+        # Find nearest garage using direct route calculation
+        analysis = self.find_nearest_garage(coord, hour)
 
-        # Project target coordinate to network
-        target_point = shapely.Point(coord[1], coord[0])  # (lng, lat)
-
-        # Find nearest edge and project point onto it
-        edge = ox.distance.nearest_edges(G, target_point.x, target_point.y)
-        edge_data = G.edges[edge[0], edge[1], edge[2]]
-
-        # Get edge geometry
-        if 'geometry' in edge_data:
-            edge_line = edge_data['geometry']
-        else:
-            # Create straight line between nodes if no geometry
-            u_pt = (G.nodes[edge[0]]['x'], G.nodes[edge[0]]['y'])
-            v_pt = (G.nodes[edge[1]]['x'], G.nodes[edge[1]]['y'])
-            edge_line = shapely.LineString([u_pt, v_pt])
-
-        # Project point onto edge and get its position along the edge
-        projected_point = edge_line.interpolate(edge_line.project(target_point))
-
-        # Calculate fraction along edge where point lies
-        edge_start = shapely.Point(edge_line.coords[0])
-        total_length = edge_line.length
-        distance_along = edge_start.distance(projected_point)
-        fraction = distance_along / total_length
-
-        try:
-            # Calculate shortest path to both ends of the edge
-            weight = 'travel_time' if voronoi_type != VoronoiType.TRAFFIC else 'traffic_time'
-            path_to_u = nx.shortest_path(G, garage_node, edge[0], weight=weight)
-            path_to_v = nx.shortest_path(G, garage_node, edge[1], weight=weight)
-
-            # Calculate metrics for both potential paths
-            metrics_u = self._calculate_path_metrics(G, path_to_u, weight)
-            metrics_v = self._calculate_path_metrics(G, path_to_v, weight)
-
-            # Add fractional distance/time to each path
-            edge_time = edge_data.get(weight, edge_data.get('travel_time', 0))
-            edge_length = edge_data.get('length', 0)
-
-            # Path through u node
-            metrics_u['time'] += edge_time * fraction
-            metrics_u['distance'] += edge_length * fraction
-            metrics_u['coords'].extend(self._get_partial_edge_coords(edge_line, 0, fraction))
-
-            # Path through v node
-            metrics_v['time'] += edge_time * (1 - fraction)
-            metrics_v['distance'] += edge_length * (1 - fraction)
-            metrics_v['coords'].extend(self._get_partial_edge_coords(edge_line, fraction, 1))
-
-            # Choose the shorter path
-            if metrics_u['time'] < metrics_v['time']:
-                path = path_to_u
-                metrics = metrics_u
-                final_point = projected_point
-            else:
-                path = path_to_v
-                metrics = metrics_v
-                final_point = projected_point
-
-            # Create final route geometry
-            route_geometry = LineString(metrics['coords'])
-
+        if analysis:
             return {
-                'garage': garage,
-                'travel_time': round(metrics['time'] / 60, 1),  # Convert to minutes
-                'distance': round(metrics['distance'] / 1000, 2),  # Convert to km
-                'path': metrics['coords'],
-                'route_geometry': route_geometry,
-                'speed_profile': metrics['speeds'],
-                'node_count': len(path)
+                'garage': analysis['garage'],
+                'travel_time': analysis['travel_time'],
+                'distance': analysis['distance'],
+                'route_geometry': analysis['route_geometry']
             }
 
-        except nx.NetworkXNoPath:
-            logging.warning(f"No path found from garage {garage.get('Name', 'Unknown')} to coordinate")
-            return None
-        except nx.NodeNotFound:
-            logging.error("Invalid nodes in path calculation")
-            return None
-
-    def _calculate_path_metrics(self, G, path, weight):
-        """Calculate metrics for a path"""
-        total_time = 0
-        total_distance = 0
-        path_coords = []
-        speed_profile = []
-
-        for u, v in zip(path[:-1], path[1:]):
-            edge_data = G.edges[u, v, 0]
-            edge_time = edge_data.get(weight, edge_data.get('travel_time', 0))
-            edge_length = edge_data.get('length', 0)
-
-            # Calculate speed in km/h
-            if edge_time > 0:
-                speed = (edge_length / 1000) / (edge_time / 3600)
-            else:
-                speed = 0
-            speed_profile.append(speed)
-
-            total_time += edge_time
-            total_distance += edge_length
-
-            # Collect path coordinates
-            if 'geometry' in edge_data:
-                path_coords.extend(list(edge_data['geometry'].coords))
-            else:
-                u_pt = (G.nodes[u]['x'], G.nodes[u]['y'])
-                v_pt = (G.nodes[v]['x'], G.nodes[v]['y'])
-                path_coords.extend([u_pt, v_pt])
-
-        return {
-            'time': total_time,
-            'distance': total_distance,
-            'coords': path_coords,
-            'speeds': speed_profile
-        }
-
-    def _get_partial_edge_coords(self, line, start_fraction, end_fraction):
-        """Get coordinates for a portion of a line"""
-        if start_fraction > end_fraction:
-            start_fraction, end_fraction = end_fraction, start_fraction
-
-        coords = list(line.coords)
-        if len(coords) == 2:
-            # Simple straight line
-            start = line.interpolate(start_fraction, normalized=True)
-            end = line.interpolate(end_fraction, normalized=True)
-            return [(start.x, start.y), (end.x, end.y)]
-        else:
-            # Complex line with multiple segments
-            total_length = line.length
-            start_dist = start_fraction * total_length
-            end_dist = end_fraction * total_length
-
-            partial_coords = []
-            current_dist = 0
-
-            for i in range(len(coords) - 1):
-                segment = LineString([coords[i], coords[i + 1]])
-                segment_length = segment.length
-                next_dist = current_dist + segment_length
-
-                if start_dist <= next_dist and current_dist <= end_dist:
-                    if start_dist >= current_dist and start_dist <= next_dist:
-                        # Add interpolated start point
-                        fraction = (start_dist - current_dist) / segment_length
-                        start = segment.interpolate(fraction, normalized=True)
-                        partial_coords.append((start.x, start.y))
-                    else:
-                        # Add segment start point
-                        partial_coords.append(coords[i])
-
-                    if end_dist >= current_dist and end_dist <= next_dist:
-                        # Add interpolated end point
-                        fraction = (end_dist - current_dist) / segment_length
-                        end = segment.interpolate(fraction, normalized=True)
-                        partial_coords.append((end.x, end.y))
-                        break
-
-                current_dist = next_dist
-
-            return partial_coords
+        logging.warning(f"Could not find route for coordinate {coord}")
+        return None
 
     def load_constituency_populations(self):
         """Load population data from CSV"""
@@ -1041,3 +831,127 @@ class Network:
             logging.info(f"Saved Voronoi data to cache {self.cache_file}")
         except Exception as e:
             logging.error(f"Failed to save cache: {e}")
+
+    def find_nearest_garage(self, coord: Tuple[float, float], hour: int = None) -> dict:
+        """Find nearest garage by traffic-weighted route time
+
+        Args:
+            coord: (latitude, longitude) of breakdown
+            hour: Hour of day for traffic weighting (7-18)
+
+        Returns:
+            dict: Garage data and route metrics for nearest garage
+        """
+        if not self._road_network:
+            self._road_network = self.get_road_network()
+
+        # Create traffic-weighted network if hour is specified
+        if hour and 7 <= hour <= 18:
+            G = self._road_network.copy()
+            traffic_data = TrafficData()
+            traffic_factors = traffic_data.traffic_factors
+
+            # Apply traffic factors to network
+            for u, v, k, data in G.edges(data=True, keys=True):
+                highway = data.get('highway', 'default')
+                if isinstance(highway, list):
+                    highway = highway[0]
+
+                # Get traffic factor for this road type and hour
+                road_factors = traffic_factors.get(highway, traffic_factors['default'])
+                if isinstance(road_factors, dict):
+                    traffic_factor = road_factors.get(str(hour), 1.0)
+                else:
+                    traffic_factor = road_factors
+
+                # Apply factor to travel time
+                data['traffic_time'] = data['travel_time'] * traffic_factor
+        else:
+            G = self._road_network
+
+        best_garage = None
+        best_metrics = None
+        min_time = float('inf')
+
+        for _, garage in self.filtered_garages.iterrows():
+            metrics = self._calculate_route_metrics(
+                coord,
+                (garage.geometry.y, garage.geometry.x),
+                hour,
+                cached_network=G
+            )
+
+            if metrics and metrics['time'] < min_time:
+                min_time = metrics['time']
+                best_metrics = metrics
+                best_garage = garage.to_dict()
+
+        if best_garage:
+            return {
+                'garage': best_garage,
+                'travel_time': best_metrics['time'],
+                'distance': best_metrics['distance'],
+                'route_geometry': best_metrics['route_geometry']
+            }
+        return None
+
+    def _calculate_route_metrics(self, origin: Tuple[float, float], destination: Tuple[float, float],
+                               hour: int = None, cached_network = None) -> dict:
+        """Calculate route metrics between two points
+
+        Args:
+            origin: (latitude, longitude) of start point
+            destination: (latitude, longitude) of end point
+            hour: Hour of day for traffic weighting (7-18)
+            cached_network: Pre-weighted network graph (optional)
+
+        Returns:
+            dict: Route metrics including time, distance, and geometry
+        """
+        try:
+            # Use cached network if provided, otherwise get fresh
+            G = cached_network if cached_network is not None else self.get_road_network()
+
+            # Get nearest nodes
+            orig_node = ox.nearest_nodes(G, origin[1], origin[0])
+            dest_node = ox.nearest_nodes(G, destination[1], destination[0])
+
+            # Calculate shortest path
+            weight = 'traffic_time' if hour and 7 <= hour <= 18 else 'travel_time'
+            path = nx.shortest_path(G, orig_node, dest_node, weight=weight)
+
+            # Calculate metrics
+            distance = 0
+            time = 0
+            coords = []
+
+            # Collect path coordinates and calculate metrics
+            for u, v in zip(path[:-1], path[1:]):
+                edge_data = G.edges[u, v, 0]
+
+                # Add distance
+                if 'length' in edge_data:
+                    distance += edge_data['length']
+
+                # Add time (use traffic_time if available, otherwise travel_time)
+                time += edge_data.get(weight, edge_data.get('travel_time', 0))
+
+                # Collect coordinates for route geometry
+                if 'geometry' in edge_data:
+                    coords.extend(list(edge_data['geometry'].coords))
+                else:
+                    coords.extend([(G.nodes[u]['x'], G.nodes[u]['y']),
+                                 (G.nodes[v]['x'], G.nodes[v]['y'])])
+
+            # Create route geometry
+            route_geom = LineString(coords)
+
+            return {
+                'time': time / 60,  # Convert to minutes
+                'distance': distance,
+                'route_geometry': route_geom
+            }
+
+        except Exception as e:
+            logging.error(f"Error calculating route metrics: {e}")
+            return None
