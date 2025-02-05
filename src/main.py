@@ -1,15 +1,22 @@
 from data import TrafficData, GarageData
 from network import Network, VoronoiType
-from simplified_simulator import SimplifiedSimulator
 from simulator import BreakdownSimulator
 import logging
-from visualisation import AnimatedResults
 
-# logging.basicConfig(level=logging.INFO,
+# logging.basicConfig(level=logging.DEBUG,
 #                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 # logging.getLogger('matplotlib').setLevel(logging.WARNING)
 
+# ---
+
 traffic_data = TrafficData()
+
+# Traffic data across the 2023 year (interactive plot)
+# traffic_data.plot_daily_traffic_counts()
+
+# Average traffic data across the 2023 year (static plot) (used for traffic factors)
+# traffic_data.plot_average_traffic_counts()
+
 garage_data = GarageData()
 
 constituencies = [
@@ -32,27 +39,70 @@ constituencies = [
     'Newport West'
 ]
 
-
 if __name__ == "__main__":
-    bristol_network = Network(garage_data, constituencies, use_voronoi_cache=False)
-    bristol_network.show_network(show_garages=True, show_garage_labels=True, voronoi_type=VoronoiType.TRAFFIC, traffic_hour=8, show_roads=True)
+    # Initialize network
+    bristol_network = Network(garage_data, constituencies)
 
-
-    # simulator = BreakdownSimulator(
-    #     bristol_network,
-    #     voronoi_type=VoronoiType.TRAFFIC
+    # Run visualization
+    # bristol_network.show_network(
+    #     show_garages=True,
+    #     show_roads=True,
+    #     show_constituencies=False,
+    #     show_traffic=False,
+    #     voronoi_type=VoronoiType.NETWORK,
+    #     traffic_hour=8,
+    #     coord=(51.574083, -2.616579)
     # )
-    # results = simulator.run(
-    #     simulation_days=1,
-    #     breakdown_rate=8.17
-    # )
 
-    # print(f"Simulated {len(results)} breakdowns")
+    # Run simulation with multiple runs
+    simulator = BreakdownSimulator(
+        network=bristol_network,
+        vans_per_garage=200,
+        voronoi_type=VoronoiType.TRAFFIC
+    )
+    simulator.run(
+        simulation_days=1,
+        breakdown_rate=8.165342563671928,    # Average time between breakdowns in minutes
+        num_runs=5
+    )
 
-    # # scene = AnimatedResults(
-    # #     results_path="results/simulation_results_20250129_230927_run1.json",
-    # #     start_time=420,  # 7:00
-    # #     end_time=540,  # 9:00
-    # # )
+# bristol_network.show_network(
+#     show_garages=True,
+#     show_roads=True,
+#     show_traffic=False,
+#     voronoi_type=VoronoiType.NETWORK,
+#     traffic_hour=8,
+#     coord=(51.574083, -2.616579)
+# )
 
-    # scene.render()
+# bristol_network.show_network(
+#     show_garages=True,
+#     show_roads=True,
+#     show_traffic=False,
+#     voronoi_type=VoronoiType.TRAFFIC,
+#     traffic_hour=8,
+#     coord=(51.574083, -2.616579)
+# )
+
+# Test coordinate lookup with route analysis
+# coord = (51.574083, -2.616579)
+# for voronoi_type in [VoronoiType.EUCLIDEAN, VoronoiType.TRAFFIC, VoronoiType.NETWORK]:
+#     print(f"\nAnalysing {voronoi_type.value} route:")
+#     analysis = bristol_network.analyse_route(
+#         coord,
+#         voronoi_type,
+#         hour=8 if voronoi_type == VoronoiType.TRAFFIC else None
+#     )
+
+#     if analysis:
+#         garage = analysis['garage']
+#         print(f"From {garage.get('Postcode', 'No Postcode')}:")
+#         print(f"Travel time: {analysis['travel_time']} mins")
+#         distance_km = analysis['distance']
+#         distance_mi = distance_km * 0.621371
+#         print(f"Distance: {distance_km:.1f} km ({distance_mi:.1f} mi)")
+#         avg_speed_kmh = distance_km/(analysis['travel_time']/60)
+#         avg_speed_mph = avg_speed_kmh * 0.621371
+#         print(f"Average speed: {avg_speed_kmh:.1f} km/h ({avg_speed_mph:.1f} mph)")
+#     else:
+#         print("No route found")

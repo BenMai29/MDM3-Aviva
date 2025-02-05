@@ -9,8 +9,6 @@ from datetime import datetime
 from pathlib import Path
 import multiprocessing
 from functools import partial
-import json
-import shapely
 
 def format_time(minutes):
     """Convert minutes to days, hours, minutes format"""
@@ -44,7 +42,6 @@ class BreakdownSimulator:
         self.last_time_display = 0  # Track last displayed time
         # Cache the road network
         self._road_network = self.network.get_road_network()
-        self.breakdown_events = []  # Add this line
 
     def _init_garages(self):
         """Initialize garage states based on network data"""
@@ -62,33 +59,26 @@ class BreakdownSimulator:
             for const, pop in self.network.constituency_populations.items()
         }
 
-    def _generate_breakdown(self, env):
-        """Generate a random breakdown location and time"""
-        # Get road network boundary
-        road_network = self.network.get_road_network()
-        nodes = list(road_network.nodes(data=True))  # Convert to list of (node_id, attributes)
+    def _generate_breakdown_location(self):
+        """Generate breakdown location weighted by constituency population"""
+        # Select constituency
+        constituency = random.choices(
+            list(self.breakdown_probabilities.keys()),
+            weights=list(self.breakdown_probabilities.values()),
+            k=1
+        )[0]
 
-        # Get random node from road network
-        node_id, node_data = random.choice(nodes)
-        lon, lat = node_data['x'], node_data['y']  # x=longitude, y=latitude
+        # Generate point within constituency boundary
+        boundary = self.network.get_constituency_boundary(constituency)
+        minx, miny, maxx, maxy = boundary.bounds
 
-        # Get current hour for traffic analysis
-        current_time = env.now
-        hour = (current_time // 60) % 24
-
-        # Find nearest garage - pass coordinates as (latitude, longitude)
-        analysis = self.network.analyse_route((lat, lon), voronoi_type=self.voronoi_type, hour=hour)
-        if not analysis:
-            return None
-
-        return {
-            'time': int(current_time),
-            'location': {
-                'type': 'Point',
-                'coordinates': [lon, lat]  # GeoJSON uses [longitude, latitude]
-            },
-            'garage_id': analysis['garage']['Postcode']
-        }
+        while True:
+            point = Point(
+                random.uniform(minx, maxx),
+                random.uniform(miny, maxy)
+            )
+            if point.within(boundary):
+                return point
 
     def breakdown_generator(self, env, breakdown_rate: float):
         """Generate breakdown events only during working hours"""
@@ -98,15 +88,14 @@ class BreakdownSimulator:
 
             # Only generate breakdowns during working hours
             if self.SIMULATION_START_HOUR <= current_hour < self.SIMULATION_END_HOUR:
-                # if hasattr(self, 'show_progress') and self.show_progress:
-                    # if current_time >= self.last_time_display + 30:
-                        # print(f"\rSimulation time: {format_time(current_time)}\n", end="", flush=True)
-                        # self.last_time_display = current_time
+                if hasattr(self, 'show_progress') and self.show_progress:
+                    if current_time >= self.last_time_display + 30:
+                        print(f"\rSimulation time: {format_time(current_time)}\n", end="", flush=True)
+                        self.last_time_display = current_time
 
                 yield env.timeout(random.expovariate(1 / breakdown_rate))
-                breakdown_point = self._generate_breakdown(env)
-                if breakdown_point:  # Only process valid breakdowns
-                    env.process(self.assign_van(env, breakdown_point))
+                breakdown_point = self._generate_breakdown_location()
+                env.process(self.assign_van(env, breakdown_point))
             else:
                 # Skip to next working day if outside working hours
                 minutes_until_next_day = ((24 - current_hour + self.SIMULATION_START_HOUR) % 24) * 60
@@ -114,25 +103,13 @@ class BreakdownSimulator:
 
     def assign_van(self, env, breakdown_point):
         """Optimized van assignment"""
-        current_time = int(env.now)
-        coord = (breakdown_point['location']['coordinates'][1], breakdown_point['location']['coordinates'][0])
-
-        # Create event dictionary at start of assignment
-        event = {
-            'time': current_time,
-            'simulation_time': format_time(current_time),
-            'location': breakdown_point['location'],
-            'garage_id': breakdown_point['garage_id'],
-            'travel_time': None,
-            'route_geometry': None,
-            'total_job_time': None,
-            'status': 'dispatched'
-        }
+        current_hour = (int(env.now) // 60) % 24
+        coord = (breakdown_point.y, breakdown_point.x)
 
         garage_data = self.network.find_garage_for_coordinate(
             coord,
             self.voronoi_type,
-            hour=current_time // 60 if self.voronoi_type == VoronoiType.TRAFFIC else None
+            hour=current_hour if self.voronoi_type == VoronoiType.TRAFFIC else None
         )
 
         if not garage_data:
@@ -156,54 +133,37 @@ class BreakdownSimulator:
 
         # Dispatch van
         garage['vans'].pop()
-        print(f"Van dispatched from garage {garage['id']} at {format_time(current_time)}")
+        print(f"Van dispatched from garage {garage['id']} at {format_time(int(env.now))}")
 
         # Use cached route analysis with current hour
         analysis = self.network.analyse_route(
             coord,
             self.voronoi_type,
-            hour=current_time // 60 if self.voronoi_type == VoronoiType.TRAFFIC else None,
+            hour=current_hour if self.voronoi_type == VoronoiType.TRAFFIC else None,
             cached_network=self._road_network
         )
 
         if not analysis:
-            event['status'] = 'failed'
-            self.breakdown_events.append(event)
+            print("No route found!")
+            garage['vans'].append('available')
+            garage_stats['current_vans_out'] -= 1
             return
 
-        # Remove conversion - use travel_time directly as minutes
-        travel_time = analysis['travel_time']
-
-        # Calculate total job time (now in minutes)
-        total_job_time = 2 * travel_time + self.SERVICE_TIME
+        # Calculate total job time
+        total_job_time = (2 * analysis['travel_time'] + self.SERVICE_TIME) * 60
         garage_stats['total_time'] += total_job_time
 
-        # Simulate travel to breakdown (1:1 minute scale)
-        yield env.timeout(travel_time)
-        arrival_time = int(env.now)
-        print(f"Van from {garage['id']} arrived at breakdown at {format_time(arrival_time)}")
-
-        # Service time remains in minutes
+        # Simulate travel and service
+        yield env.timeout(analysis['travel_time'] * 60)
+        print(f"Van arrived at breakdown at {format_time(int(env.now))}")
         yield env.timeout(self.SERVICE_TIME)
-
-        # Return trip
-        yield env.timeout(travel_time)
-        return_time = int(env.now)
-        print(f"Van returned to garage {garage['id']} at {format_time(return_time)}")
+        print(f"Service completed at {format_time(int(env.now))}")
+        yield env.timeout(analysis['travel_time'] * 60)
 
         # Van returns
         garage['vans'].append('available')
         garage_stats['current_vans_out'] -= 1
-
-        # Update event with actual timestamps
-        event.update({
-            'travel_time': travel_time,
-            'route_geometry': shapely.geometry.mapping(analysis['route_geometry']),
-            'total_job_time': return_time - current_time,
-            'status': 'completed'
-        })
-
-        self.breakdown_events.append(event)  # Add this line
+        print(f"Van returned to garage {garage['id']} at {format_time(int(env.now))}")
 
     def print_statistics(self):
         """Print final statistics for each garage"""
@@ -235,7 +195,8 @@ class BreakdownSimulator:
         with open(filepath, 'w') as f:
             f.write("=== Simulation Results ===\n")
             f.write(f"Run number: {run_num if run_num is not None else 1}\n")
-            f.write(f"Voronoi type: {self.voronoi_type.value}\n\n")
+            f.write(f"Voronoi type: {self.voronoi_type.value}\n")
+            f.write(f"Vans per garage: {self.vans_per_garage}\n\n")
 
             for garage_id, stats in self.garage_stats.items():
                 f.write(f"Garage {garage_id}:\n")
@@ -249,13 +210,6 @@ class BreakdownSimulator:
                 f.write("\n")
 
         print(f"\nResults saved to {filepath}")
-
-        # Add this section to save events as JSON
-        events_filepath = filepath.with_suffix('.json')
-        with open(events_filepath, 'w') as f:
-            json.dump(self.breakdown_events, f, indent=2, default=str)
-
-        print(f"\nEvents saved to {events_filepath}")
 
     def _single_run(self, run_num: int, simulation_days: int, breakdown_rate: float, show_logs: bool = False):
         """Run a single simulation"""
