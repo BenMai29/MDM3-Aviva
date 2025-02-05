@@ -189,7 +189,16 @@ class GarageData:
 
     def load_garage_data_gdf(self) -> gpd.GeoDataFrame:
         logging.debug("Loading garage data as GeoDataFrame")
-        df = self.load_garage_data()
+        df = self.df
         gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.Longitude, df.Latitude))
         logging.debug(f"Successfully loaded garage data as GeoDataFrame with {len(gdf)} rows")
         return gdf
+
+    def update_garage_location(self, postcode: str, lat: float, lon: float):
+        """Update garage location in both DataFrame and GeoDataFrame"""
+        # Update DataFrame
+        self.df.loc[self.df['Postcode'] == postcode, 'Latitude'] = lat
+        self.df.loc[self.df['Postcode'] == postcode, 'Longitude'] = lon
+
+        # Update GeoDataFrame
+        self.gdf = self.load_garage_data_gdf()  # Recreate GeoDataFrame with new coordinates
