@@ -1,0 +1,105 @@
+import os
+import re
+import numpy as np
+import matplotlib.pyplot as plt
+
+plt.rcParams["font.family"] = "Palatino Linotype"
+# Folder containing the result files
+data_folder = "resultsoriginal" 
+#data_folder = "Results"
+
+# Dictionary to store extracted data
+garage_data = {}
+
+# Regex patterns to extract garage name, max vans out, and total breakdowns
+garage_pattern = re.compile(r"Garage ([A-Z0-9 ]+):")
+max_vans_pattern = re.compile(r"Maximum vans out simultaneously: (\d+)")
+total_breakdowns_pattern = re.compile(r"Total breakdowns: (\d+)")
+avg_job_time_pattern = re.compile(r"Average total job time: (\d+)")
+
+# Loop through all result files in the folder
+for filename in os.listdir(data_folder):
+    if filename.endswith(".txt"):  # Process only text files
+        with open(os.path.join(data_folder, filename), "r") as file:
+            current_garage = None
+            for line in file:
+                garage_match = garage_pattern.search(line)
+                if garage_match:
+                    current_garage = garage_match.group(1)
+                    if current_garage not in garage_data:
+                        garage_data[current_garage] = {"max_vans": [], "total_breakdowns": [], "avg_job_time": []}
+
+                max_vans_match = max_vans_pattern.search(line)
+                if max_vans_match and current_garage:
+                    garage_data[current_garage]["max_vans"].append(int(max_vans_match.group(1)))
+
+                total_breakdowns_match = total_breakdowns_pattern.search(line)
+                if total_breakdowns_match and current_garage:
+                    garage_data[current_garage]["total_breakdowns"].append(int(total_breakdowns_match.group(1)))
+                avg_job_time_match = avg_job_time_pattern.search((line))
+                if avg_job_time_match and current_garage:
+                    garage_data[current_garage]["avg_job_time"].append(int(avg_job_time_match.group(1)))
+
+# Compute statistics
+garages = []
+max_vans_means = []
+total_breakdowns_means = []
+avg_job_time_means = []
+for garage, values in garage_data.items():
+    max_vans = np.array(values["max_vans"])
+    total_breakdowns = np.array(values["total_breakdowns"])
+    avg_job_time = np.array(values["avg_job_time"])
+    if len(max_vans) > 0:
+        max_vans_mean = np.mean(max_vans)
+    else:
+        max_vans_mean = 0
+
+    if len(total_breakdowns) > 0:
+        total_breakdowns_mean = np.mean(total_breakdowns)
+    else:
+        total_breakdowns_mean = 0
+
+    if len(avg_job_time) > 0:
+        avg_job_time_mean = np.mean(avg_job_time)
+    else:
+        avg_job_time_mean = 0
+    garages.append(garage)
+    max_vans_means.append(max_vans_mean)
+    total_breakdowns_means.append(total_breakdowns_mean)
+    avg_job_time_means.append(avg_job_time_mean)
+
+# Plot bar chart
+fig, ax = plt.subplots(figsize=(12, 6))
+x = np.arange(len(garages))  # x-axis positions
+
+bar_width = 0.4
+ax.bar(x - bar_width/2, max_vans_means, bar_width, label="Max Vans Out", color="royalblue")
+ax.bar(x + bar_width/2, total_breakdowns_means, bar_width, label="Total Breakdowns", color="darkorange")
+
+# Formatting the chart
+ax.set_xlabel("Garages", fontsize=15)
+ax.set_ylabel("Mean Count", fontsize= 15)
+ax.set_title("Comparison of Maximum Vans Out Simultaneously and Total Breakdowns per Garage", fontsize=20)
+ax.set_xticks(x)
+ax.set_xticklabels(garages, rotation=90)  # Rotate labels for readability
+ax.legend(fontsize=15)
+ax.grid(axis="y", linestyle="--", alpha=0.7)
+
+plt.tight_layout()
+plt.show()
+
+# Plot bar chart
+fig, ax = plt.subplots(figsize=(12, 6))
+x = np.arange(len(garages))  # x-axis positions
+
+ax.bar(x, avg_job_time_means, bar_width, label="Average job time", color="red")
+ax.set_xlabel("Garages")
+ax.set_ylabel("Mean Time (mins)")
+ax.set_title("Comparison of Average Job Time per Garage")
+ax.set_xticks(x)
+ax.set_xticklabels(garages, rotation=90)  # Rotate labels for readability
+ax.legend()
+ax.grid(axis="y", linestyle="--", alpha=0.7)
+
+plt.tight_layout()
+plt.show()
