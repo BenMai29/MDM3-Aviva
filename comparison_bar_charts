@@ -3,7 +3,8 @@ import re
 import numpy as np
 import matplotlib.pyplot as plt
 
-
+#plt.rcParams["font.family"] = "Palatino"
+plt.rcParams["font.family"] = "Palatino Linotype"
 def process_data(data_folder):
     garage_data = {}
 
@@ -60,23 +61,48 @@ def plot_comparison(garages, data1, data2, label1, label2, title, ylabel, colors
     fig, ax = plt.subplots(figsize=(12, 6))
     ax.bar(x - bar_width / 2, data1, bar_width, label=label1, color=colors[0])
     ax.bar(x + bar_width / 2, data2, bar_width, label=label2, color=colors[1])
-
-    ax.set_xlabel("Garages")
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
+    plt.plot(x, np.mean(data1)*np.ones(len(x)), label="Optimised average", color=colors[0])
+    plt.plot(x, np.mean(data2)*np.ones(len(x)), label="Original average", color=colors[1])
+    ax.set_xlabel("Garages", fontsize=15)
+    ax.set_ylabel(ylabel, fontsize=15)
+    ax.set_title(title, fontsize=20)
     ax.set_xticks(x)
     ax.set_xticklabels(garages, rotation=90)
-    ax.legend()
+    ax.legend(fontsize=15)
     ax.grid(axis="y", linestyle="--", alpha=0.7)
 
     plt.tight_layout()
     plt.show()
 
+def plottime_comparison(garages, data1, data2, data3, data4, label1, label2, title, ylabel, colors):
+    x = np.arange(len(garages))
+    bar_width = 0.35
+    data11=np.array(data1)
+    data22=np.array(data2)
+    data33=np.array(data3)
+    data44=np.array(data4)
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.bar(x - bar_width / 2, data1, bar_width, label=label1, color=colors[0])
+    ax.bar(x + bar_width / 2, data2, bar_width, label=label2, color=colors[1])
+    plt.plot(x, 61.73*np.ones(len(x)), label="Optimised average", color=colors[0])
+    plt.plot(x, 63.06*np.ones(len(x)), label="Original average", color=colors[1])
+    ax.set_xlabel("Garages", fontsize=15)
+    ax.set_ylabel(ylabel, fontsize=15)
+    ax.set_title(title, fontsize=20)
+    ax.set_xticks(x)
+    ax.set_xticklabels(garages, rotation=90)
+    ax.legend(fontsize=15)
+    ax.grid(axis="y", linestyle="--", alpha=0.7)
+
+    plt.tight_layout()
+    plt.show()
 
 # Define both data folders
-data_folder_1 = "Results"
-data_folder_2 = "resultsoriginal"
+# data_folder_1 = "Results"
+# data_folder_2 = "resultsoriginal"
 
+data_folder_1 = "optimised"
+data_folder_2 = "original"
 data_1 = process_data(data_folder_1)
 data_2 = process_data(data_folder_2)
 
@@ -100,8 +126,8 @@ avg_job_time_2_common = get_common_data(common_garages, garages_2, avg_job_time_
 
 # Plot comparisons
 plot_comparison(common_garages, max_vans_1_common, max_vans_2_common, "Optimised Results", "Original Results",
-                "Maximum Vans Out Comparison", "Mean Count", ["royalblue", "cornflowerblue"])
+                "Maximum Vans Out Comparison", "Mean Count", ["purple", "limegreen"])
 plot_comparison(common_garages, total_breakdowns_1_common, total_breakdowns_2_common, "Optimised Results", "Original Results",
-                "Total Breakdowns Comparison", "Mean Count", ["darkorange", "lightsalmon"])
-plot_comparison(common_garages, avg_job_time_1_common, avg_job_time_2_common, "Optimised Results", "Original Results",
-                "Average Service Time Comparison", "Mean Time (mins)", ["red", "lightcoral"])
+                "Total Breakdowns Comparison", "Mean Count", ["purple", "limegreen"])
+plottime_comparison(common_garages, avg_job_time_1_common, avg_job_time_2_common, total_breakdowns_1_common, total_breakdowns_2_common, "Optimised Results", "Original Results",
+                "Average Service Time Comparison", "Mean Time (mins)", ["purple", "limegreen"])
