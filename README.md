@@ -1,4 +1,6 @@
 # MDM3 Group 2 - Aviva
+![Example Visualisation](/Example.mp4)
+
 A project which assesses the distribution of garages across the UK, and calculates the drive times to each garage from a given point.
 
 This demo focuses on the South West region of the UK, around Bristol and South Wales.
